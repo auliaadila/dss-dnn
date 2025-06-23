@@ -1,5 +1,5 @@
 from torch.utils.data import DataLoader
-from datasets import FrameDataset
+from misc.datasets import FrameDataset
 
 # 1) Instantiate with a small folder of WAVs
 ds = FrameDataset(

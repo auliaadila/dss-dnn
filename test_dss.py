@@ -3,7 +3,7 @@ import numpy as np
 import soundfile as sf
 from pesq import pesq as pesq_score
 
-import dss
+import dss.dss as dss
 
 # Configuration
 FOLDER_IN = 'dataset/host'           # folder with input .wav files

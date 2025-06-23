@@ -3,7 +3,7 @@ import os
 import numpy as np
 import tensorflow as tf
 import soundfile as sf
-from dss import embed_dss, generate_bps  # existing DSS functions
+from dss.dss import embed_dss, generate_bps  # existing DSS functions
 
 	# •	frame_size = How long each audio example is (160 samples/frame)
 	# •	batch_size = How many of those examples you process together in each training step
@@ -70,8 +70,6 @@ class FrameSequence(tf.keras.utils.Sequence):
             host_sig = self.hosts[host_idx]
             # generate or reuse a bit-per-second pattern
             wm_bps = generate_bps(self.bps)
-            print("host idx | frame idx:", host_idx, frame_idx)
-            print("generated bps:", wm_bps)
             # embed entire signal once
             watermarked, _, embed_bits_extended, c = embed_dss(
                 host_sig, self.fs, wm_bps,
@@ -82,6 +80,15 @@ class FrameSequence(tf.keras.utils.Sequence):
             wm_frames[i] = watermarked[s:s+self.frame_size]
             carriers[i] = c[:, frame_idx]
             labels[i] = embed_bits_extended[frame_idx]
+
+            print("=====> i:", i)
+            print("host idx | frame idx:", host_idx, frame_idx)
+            print("generated bps:", wm_bps)
+            print("wm_frames:", wm_frames[i])
+            print("carriers:", carriers[i])
+            print("labels:", labels[i])
+
+            break
 
         # return as tuple of arrays
         return [wm_frames, carriers], labels

@@ -2,7 +2,7 @@
 # in torch
 import os, numpy as np, torch
 from torch.utils.data import Dataset
-from dss import embed_dss, generate_bps  # your existing embed function
+from dss.dss import embed_dss, generate_bps  # your existing embed function
 import soundfile as sf
 
 class FrameDataset(Dataset):

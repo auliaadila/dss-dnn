@@ -2,7 +2,7 @@ import numpy as np
 from dataset import FrameSequence
 import soundfile as sf
 import os 
-from dss import embed_dss
+from dss.dss import embed_dss
 
 def test_dataloader():
     # Adjust these paths/params to match your setup
