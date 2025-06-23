@@ -8,7 +8,7 @@ import dss
 # Configuration
 FOLDER_IN = 'dataset/host'           # folder with input .wav files
 FOLDER_OUT = 'dataset/dss-wm'
-BPS = 4                   # bits per second
+BPS = 64                   # bits per second
 SSL_DB = -25                # embedding strength in dB
 FRAME_SIZE = 160
 
@@ -28,22 +28,26 @@ for fname in os.listdir(FOLDER_IN):
     # Generate random watermark bits
     # duration = len(host) / fs
     # total_bits = int(np.ceil(BPS * duration))
-    wm_bps = dss.generate_bitpattern(BPS)
+    wm_bps = dss.generate_bps(BPS)
 
     # Embed
-    watermarked, embed_bits = dss.embed_dss(host, fs, wm_bps, SSL_DB, FRAME_SIZE)
-    print("embedded WM:",embed_bits)
+    watermarked, embed_bits, _ , _ = dss.embed_dss(host, fs, wm_bps, SSL_DB, FRAME_SIZE)
+    print("embedded WM:",embed_bits.shape)
+    # print(embed_bits)
 
     # export watermarked signal
     output_path = os.path.join(FOLDER_OUT, f"WM_{fname}.wav")
     sf.write(output_path, watermarked, fs)
+
+    
 
     # Detect
     detect_way = [0,1,2]
     ber_ways = []
     for d in detect_way:
         detected_bits = dss.detect_dss(watermarked, fs, BPS, FRAME_SIZE, detect_way=d)
-        print("detected WM:", detected_bits)
+        print("detected WM:", detected_bits.shape)
+        # print(detected_bits)
         # ber = dss.compute_ber(wm_bps[:len(detected_bps)], detected_bps)
         ber = dss.compute_ber(embed_bits, detected_bits)
         ber_ways.append({
@@ -71,10 +75,11 @@ for fname in os.listdir(FOLDER_IN):
         'ber_corr': ber_dict.get(2,None),
         'pesq_wb': pesq_score_wb,
         'pypesq': pypesq_score,
-        'bps':BPS,
-        'ssl_db':SSL_DB
+        # 'bps':BPS,
+        # 'ssl_db':SSL_DB
     })
 
+    
 print(results)
 
 # Print summary
