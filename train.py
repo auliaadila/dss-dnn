@@ -1,147 +1,535 @@
 #!/usr/bin/env python
-"""train.py – End‑to‑end training script for DSS speech watermarking with a DNN extractor.
-
-Assumptions
-===========
-* The following helper modules exist in the same repo:
-  ▸ dss/layers.py → `WatermarkEmbedding`, `WatermarkAddition`
-  ▸ net/extractor.py → `build_extractor(bits_per_frame)` returning a Keras model
-  ▸ dataset.py → `FrameSequence` that yields `(bits, pcm)` pairs and uses bits as labels
-* All audio is 16 kHz mono. Each training sample is a *frame* of 160 samples (10 ms).
-* Training is run inside the Conda env specified in dss-wm.yml (Python 3.8, TF 2.10 GPU).
+"""wm_dnn_pipeline.py – *One‑file* demo of a Deep‑Learning LP‑DSS watermark
+pipeline.
 
 Run:
-    python train.py --train_dir data/train --val_dir data/val \
-                    --chkpt_dir checkpoints
+  python wm_dnn_pipeline.py  \
+         --train_dir data/train --val_dir data/val \
+         --epochs 10 --batch 16
 
+What it contains
+================
+1. **FrameSequence** – streams 150‑ms windows + random bits.
+2. **LPAnalysis**    – fixed Levinson–Durbin residual via tf.numpy_function.
+3. **SpreadLayer**   – repeats bits across their frames.
+4. **WatermarkEmbedding** – LP residual → tanh carrier • α + host.
+5. **ChannelSim**    – AWGN + random resample/MP3 (train‑time only).
+6. **Extractor**     – tiny ResNet returning per‑frame bits.
+7. **Model builder** – stitches everything into Keras graph.
+8. **Training stub** – ModelCheckpoint + EarlyStopping.
+
+This is *minimal but runnable*; you can break it into modules later.
 """
-import os
-import argparse
+import os, glob, math, argparse
+from typing import List, Tuple
+import warnings
+
+import numpy as np
+import soundfile as sf
 import tensorflow as tf
-from datetime import datetime
+import tensorflow_io as tfio
+
+# ---------------------------------------------------------------------------
+# 1) Data loader – FrameSequence
+# ---------------------------------------------------------------------------
+class FrameSequence(tf.keras.utils.Sequence):
+    """Streams clean PCM + random 64‑bit word repeated over `seq_frames`."""
+    # change seq_frames? no need
+    def __init__(self, wav_folder: str, frame_size=160, seq_frames=15,
+                 bits_per_frame=64, batch_size=32, shuffle=True, fs=16_000):
+        self.paths = sorted(glob.glob(os.path.join(wav_folder, "**", "*.wav"), recursive=True))
+        if not self.paths:
+            raise RuntimeError("No WAVs found under", wav_folder)
+        self.frame_size = frame_size
+        self.seq_frames = seq_frames
+        self.window = frame_size * seq_frames #2400
+        self.bits_per_frame = bits_per_frame
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.fs = fs
+        self.indices = []  # (file_idx, start_sample)
+        for fi, p in enumerate(self.paths):
+            n = sf.info(p).frames
+            for s in range(0, n - self.window + 1, self.window):
+                self.indices.append((fi, s)) #len?
+        if shuffle:
+            np.random.shuffle(self.indices)
+
+    def __len__(self):
+        return math.ceil(len(self.indices) / self.batch_size)
+
+    def __getitem__(self, idx):
+        batch_idx = self.indices[idx*self.batch_size : (idx+1)*self.batch_size]
+        pcm, bits = [], []
+        for fi, st in batch_idx:
+            p = self.paths[fi]
+            # Get audio
+            raw, _ = sf.read(p, start=st, stop=st+self.window, dtype="float32")
+            pcm.append(np.expand_dims(raw, -1))
+            
+            # Generate bits
+            # Different 64-bit word in each 15 frames
+            # bits.append(np.random.randint(0, 2, (self.seq_frames, self.bits_per_frame)))
+            
+            # one 64-bit word, shared by all 15 frames
+            # [later used in SpreadLayer] bits: (B, seq_frames, bits_per_frame)
+            word = np.random.randint(0, 2, (1, self.bits_per_frame))      # (1, 64)
+            bits_full = np.repeat(word, self.seq_frames, axis=0)          # (15, 64)
+            bits.append(bits_full)
+
+        pcm = np.stack(pcm)
+        bits = np.stack(bits).astype(np.float32)
+        return [bits, pcm], bits  # labels = bits (unused)
+
+    def on_epoch_end(self):
+        if self.shuffle:
+            np.random.shuffle(self.indices)
+
+# ---------------------------------------------------------------------------
+# 2) LPAnalysis – residual via numpy_function (no gradients)
+# ---------------------------------------------------------------------------
+class LPAnalysis(tf.keras.layers.Layer):
+    def __init__(self, order=16, frame_size=160, **kw):
+        super().__init__(trainable=False, **kw)
+        self.order = order
+        self.frame_size = frame_size
+
+    def _lpc_residual(self, x):
+        import numpy as np
+        import scipy.signal as ss
+
+        B, T = x.shape
+        n_frames = T // self.frame_size
+        x = x.reshape(B, n_frames, self.frame_size)
+        res = np.zeros_like(x)
+        for b in range(B):
+            for f in range(n_frames): #process per frame
+                frm = x[b, f]
+                r = np.correlate(frm, frm, mode='full')[self.frame_size-1 : self.frame_size+self.order]
+                # Levinson‑Durbin
+                a = np.zeros(self.order+1)
+                a[0]=1
+                e=r[0]
+                for i in range(1, self.order+1):
+                    acc = r[i] - np.dot(a[1:i], r[1:i][::-1])
+                    k = acc/e
+                    a[1:i] -= k*a[i-1:0:-1]
+                    a[i]=k
+                    e *= (1-k*k)
+                res[b, f] = ss.lfilter(a, [1], frm)
+        return res.reshape(B, -1).astype(np.float32)
+
+    def call(self, x):
+        if x.shape.rank==3: x=tf.squeeze(x,-1)
+        r = tf.numpy_function(self._lpc_residual, [x], tf.float32) #check this: shape, logic
+        r.set_shape(x.shape) #check this: shape
+        return tf.expand_dims(r, -1)
+
+# ---------------------------------------------------------------------------
+# 3) SpreadLayer & WatermarkEmbedding (+α)
+# ---------------------------------------------------------------------------
+class SpreadLayer(tf.keras.layers.Layer):
+    def __init__(self, frame_size=160, **kw):
+        super().__init__(**kw); self.frame_size=frame_size
+    def call(self, bits, pcm_len):
+        chips = tf.repeat(bits, repeats=self.frame_size, axis=1)
+        chips = tf.reshape(chips, (-1, pcm_len, 1))
+        return 2.*chips-1.
+
+class WatermarkEmbedding(tf.keras.layers.Layer):
+    def __init__(self, frame_size=160, alpha_init=0.05, **kw):
+        super().__init__(**kw)
+        self.frame_size=frame_size
+        self.alpha = tf.Variable(alpha_init, trainable=True, dtype=tf.float32) #change this into adaptive, or learnable
+        self.spread = SpreadLayer(frame_size) #bits_in (-1, pcm_len, 1)
+        self.lp = LPAnalysis(frame_size=frame_size)
+    def call(self, inputs):
+        bits, pcm = inputs
+        res = self.lp(pcm)
+        chips = self.spread(bits, tf.shape(pcm)[1])  # (-1, T, 1)
+        return res + self.alpha * chips
+
+# ---------------------------------------------------------------------------
+# 4) WatermarkAddition, ChannelSim, Extractor
+# ---------------------------------------------------------------------------
+class WatermarkAddition(tf.keras.layers.Layer):
+    def __init__(self, beta=0.1, **kw):
+        super().__init__(**kw); self.beta=tf.Variable(beta, trainable=False) #change this into adaptive, or learnable
+    def call(self, pcm, res_w):
+        return pcm + self.beta*res_w
+
+import tensorflow as tf
+import tensorflow_io as tfio
+
+class ChannelSim(tf.keras.layers.Layer):
+    """
+    Differentiable distortion block.
+    ---------------------------------
+    Acts only when `training=True`.
+
+    Attacks implemented
+    -------------------
+    1. AWGN  (always on; SNR sampled from `snr_db`)
+    2. Resample 16 kHz → mid­-rate → 16 kHz  (prob = `resample_prob`)
+    3. MP3   round-trip @ 128 kbps          (prob = `mp3_prob`)
+    4. Opus  round-trip @ 24 kbps           (prob = `opus_prob`)
+
+    Parameters
+    ----------
+    fs : int
+        Native sample-rate of the signal fed to the layer.
+    snr_db : tuple(float,float)
+        Min/max SNR for AWGN in dB (uniformly sampled).
+    resample_rates : list[int]
+        Candidate mid-rates for the resample attack.
+    Optional prob args : float in [0,1]
+        resample_prob, mp3_prob, opus_prob
+    clip_dbfs : float or None
+        If set, peak-normalises to this dBFS *after* all attacks.
+    """
+
+    def __init__(
+        self,
+        fs: int = 16_000,
+        snr_db: tuple = (10.0, 30.0),
+        resample_rates = (11025, 22050, 44100),
+        resample_prob: float = 0.3,
+        mp3_prob: float = 0.3,
+        opus_prob: float = 0.0,
+        clip_dbfs: float | None = None,
+        **kwargs,
+    ):
+        super().__init__(trainable=False, **kwargs)
+        self.fs  = fs
+        self.snr = snr_db
+        self.resample_rates = list(resample_rates)
+        self.rp  = resample_prob
+        self.mp3 = mp3_prob
+        self.opu = opus_prob
+        self.clip_dbfs = clip_dbfs
+
+    # ---------------------------------------------------------
+    # helpers
+    def _awgn(self, x):
+        snr = tf.random.uniform([], *self.snr)  # dB
+        pwr = tf.reduce_mean(tf.square(x))
+        noise_pwr = pwr / (10.0 ** (snr / 10.0))
+        return x + tf.random.normal(tf.shape(x), stddev=tf.sqrt(noise_pwr))
+
+    def _resample_once(self, y, rate_mid):
+        y = tfio.audio.resample(y, rate_in=self.fs, rate_out=rate_mid)
+        return tfio.audio.resample(y, rate_in=rate_mid, rate_out=self.fs)
+
+    def _mp3_rt(self, y):
+        return tfio.audio.decode_mp3(tfio.audio.encode_mp3(y, rate=self.fs))
+
+    def _opus_rt(self, y):
+        try:
+            return tfio.audio.decode_opus(tfio.audio.encode_opus(y, rate=self.fs))
+        except AttributeError:
+            # fallback: no-op if tensorflow-io built without Opus
+            return y
+
+    def _peak_norm(self, y):
+        if self.clip_dbfs is None:
+            return y
+        peak = tf.reduce_max(tf.abs(y)) + 1e-12
+        scale = (10.0 ** (-self.clip_dbfs / 20.0)) / peak
+        return y * tf.minimum(1.0, scale)
+
+    # ---------------------------------------------------------
+    # main call
+    def call(self, x, training=False):
+        """
+        x: (B, T, 1) float32 in [-1,1]
+        """
+        if not training:
+            return x
+
+        y = self._awgn(x)
+
+        # Resample attack
+        if tf.random.uniform([]) < self.rp:
+            rate_mid = tf.random.shuffle(self.resample_rates)[0]
+            y = tf.squeeze(y, -1)
+            y = self._resample_once(y, rate_mid)
+            y = tf.expand_dims(y, -1)
+
+        # MP3 attack
+        if tf.random.uniform([]) < self.mp3:
+            y = tf.squeeze(y, -1)
+            y = self._mp3_rt(y)
+            y = tf.expand_dims(y, -1)
+
+        # Opus attack
+        if tf.random.uniform([]) < self.opu:
+            y = tf.squeeze(y, -1)
+            y = self._opus_rt(y)
+            y = tf.expand_dims(y, -1)
+
+        # Optional peak clipping / normalisation
+        y = self._peak_norm(y)
+        return y
+
+    # ---------------------------------------------------------
+    # convenience: change global strength at runtime
+    def set_strength(self, preset: str):
+        """
+        Quickly scale all attack probabilities and SNR range.
+
+        preset in {'low','default','high'}
+        """
+        if preset == 'low':
+            self.snr = (15.0, 35.0)
+            self.rp, self.mp3, self.opu = 0.1, 0.1, 0.0
+        elif preset == 'high':
+            self.snr = (0.0, 20.0)
+            self.rp, self.mp3, self.opu = 0.6, 0.6, 0.3
+        else:  # 'default'
+            self.snr = (10.0, 30.0)
+            self.rp, self.mp3, self.opu = 0.3, 0.3, 0.0
+
+def build_extractor(bits_per_frame, seq_frames, filters=32):
+    inp=tf.keras.Input(shape=(None,1))
+
+    x=tf.keras.layers.Conv1D(filters,7,2,padding='same')(inp)
+    x=tf.keras.layers.BatchNormalization()(x)
+    x=tf.keras.layers.LeakyReLU(0.2)(x)
+
+    x=tf.keras.layers.Conv1D(filters*2,5,2,padding='same')(x)
+    x=tf.keras.layers.BatchNormalization()(x)
+    x=tf.keras.layers.LeakyReLU(0.2)(x)
+
+    x=tf.keras.layers.GlobalAveragePooling1D()(x)
+    out=tf.keras.layers.Dense(bits_per_frame*seq_frames,activation='sigmoid')(x)
+    out=tf.keras.layers.Reshape((seq_frames,bits_per_frame))(out)
+
+    return tf.keras.Model(inp,out,name='extractor')
+
+# ---------------------------------------------------------------------------
+# 5) ΔPESQ metric / loss helper
+# ---------------------------------------------------------------------------
+    
+class DeltaPESQ(tf.keras.layers.Layer):
+    """Computes PESQ drop (clean – degraded) and adds it to the model loss.
+
+    • Accepts two tensors: `[clean_pcm, degraded_pcm]` with shape (B, T, 1).
+    • Uses `tf.numpy_function` – gradients do **not** flow through PESQ.
+    """
+    def __init__(self, fs=16000, name="delta_pesq", **kw):
+        super().__init__(name=name, trainable=False, **kw)
+        self.fs = fs
+        self.add_metric(0.0, name=name, aggregation="mean")  # placeholder
+
+    def call(self, inputs):
+        clean, deg = inputs
+        # flatten to 1‑D for PESQ call
+        def _pesq_np(c, d):
+            try:
+                from pesq import pesq as pesq_score
+                sc = pesq_score(self.fs, c, c, 'wb')
+                sd = pesq_score(self.fs, c, d, 'wb')
+                return np.float32(sc-sd)  # ΔPESQ (clean – degraded)
+            except Exception:
+                warnings.warn('PESQ unavailable — ΔPESQ=0'); return np.float32(0)
+        delta = tf.numpy_function(_pesq_np,
+                                  [tf.squeeze(clean), tf.squeeze(deg)],
+                                  tf.float32)
+        self.add_loss(delta)        # contributes to total loss
+        self.add_metric(delta, name=self.name)
+        return deg                  # pass‑through
 
 
 # ---------------------------------------------------------------------------
-#  Model assembly
+# 6) build_model()
 # ---------------------------------------------------------------------------
+# def build_model(frame_size=160, seq_frames=15, bits_per_frame=64):
+#     bits_in=tf.keras.Input(shape=(seq_frames,bits_per_frame), name='bits')
+#     pcm_in =tf.keras.Input(shape=(frame_size*seq_frames,1), name='pcm')
 
-def build_wm_model(frame_size=160, bits_per_frame=64, alpha_init=0.04, beta=0.10):
-    """Constructs the DSS embedder + channel + extractor graph."""
+#     res_w = WatermarkEmbedding(frame_size)([bits_in, pcm_in])
+#     pcm_w = WatermarkAddition()(pcm_in, res_w)
+#     attacked = ChannelSim()(pcm_w)
+#     bits_out = build_extractor(bits_per_frame, seq_frames)(attacked)
 
-    # Lazy imports – avoid circulars if modules import TF too
-    from dss.layers import WatermarkEmbedding, WatermarkAddition
-    # from dss.lpanalysis import LPAnalysis
-    from net.extractor import build_extractor
-    from net.distortion import ChannelSim
+#     model=tf.keras.Model([bits_in, pcm_in], bits_out, name='dl_lp_dss')
+#     ber_metric=tf.keras.metrics.BinaryAccuracy(name='acc') # update loss
+#     model.compile(optimizer=tf.keras.optimizers.Adam(1e-4),
+#                   loss=tf.keras.losses.BinaryCrossentropy(),
+#                   metrics=[ber_metric])
+#     return model
 
-    bits_in = tf.keras.Input(shape=(None, 1), dtype=tf.float32, name="bits_in")
-    pcm_in  = tf.keras.Input(shape=(None, 1), dtype=tf.float32, name="pcm_in")
+def build_model(frame_size=160, seq_frames=15, bpf=64,
+                resample_p=0.2, resample_r=(11025, 22050, 44100), mp3_p=0.2, opus_p=0.0, snr=(10.,30.), clip_d=0.0): #attack purpose
+    bits_in = tf.keras.Input(shape=(seq_frames, bpf), name="bits")
+    pcm_in  = tf.keras.Input(shape=(frame_size*seq_frames, 1), name="pcm_clean")
 
-    # 1 ‑ Embed watermark in residual
-    residual_w = WatermarkEmbedding(frame_size=frame_size,
-                                    bits_per_frame=bits_per_frame,
-                                    alpha_init=alpha_init,
-                                    trainable_alpha=False,
-                                    compute_residual=False,
-                                    name="wm_embed")([bits_in, pcm_in])
+    # Watermark path
+    res_w   = WatermarkEmbedding(frame_size, name="wm_embed")([bits_in, pcm_in])
+    pcm_w   = WatermarkAddition(beta=0.10, name="wm_add")(pcm_in, res_w)
 
-    # 2 ‑ Add residual back to waveform
-    pcm_w = WatermarkAddition(beta=beta, learnable_mask=False,
-                              name="wm_add")([pcm_in, residual_w])
+    # ΔPESQ branch (only adds loss/metric, returns pcm_w unchanged)
+    pcm_w   = DeltaPESQ(name="delta_pesq")( [pcm_in, pcm_w] )
 
-    # 3 ‑ Simulated attack channel
-    # attacked = ChannelSim(name="channel_sim")(pcm_w)
+    # Channel attacks
+    attacked = ChannelSim(resample_prob=resample_p, 
+                          resample_rates=resample_r,
+                          mp3_prob=mp3_p, 
+                          opus_prob=opus_p, 
+                          snr_db=snr,
+                          clip_dbfs=clip_d, name="chan")(pcm_w)
 
-    # 4 ‑ Extract bits
-    bits_out = build_extractor(bits_per_frame=bits_per_frame)(pcm_w)
+    # Extract bits
+    bits_out = build_extractor(bpf, seq_frames)(attacked)
 
-    model = tf.keras.Model(inputs=[bits_in, pcm_in], outputs=bits_out, name="dss_wm")
+    model=tf.keras.Model([bits_in, pcm_in], bits_out, name='dl_lp_dss')
 
-    # Loss & metrics - TO DO: refine
-    loss_fn = tf.keras.losses.BinaryCrossentropy(from_logits=False)
-    acc     = tf.keras.metrics.BinaryAccuracy(name="acc")  # frame‑level ACC proxy
-
-    model.compile(optimizer=tf.keras.optimizers.Adam(0.0001),
-                  loss=loss_fn,
-                  metrics=[acc])
     return model
 
 # ---------------------------------------------------------------------------
-#  Training utility
+# 7  Validation BER under attack
 # ---------------------------------------------------------------------------
 
-def get_sequences(train_dir, val_dir, frame_size, bits_per_frame, batch_size):
-    """Instantiate FrameSequence generators for train / val."""
-    from dataset import FrameSequence  # local import to avoid heavy deps at module load
-
-    seq_train = FrameSequence(wav_folder=train_dir,
-                              frame_size=frame_size,
-                              bpf=bits_per_frame,
-                              batch_size=batch_size,
-                              shuffle=True)
-
-    seq_val = FrameSequence(wav_folder=val_dir,
-                            frame_size=frame_size,
-                            bpf=bits_per_frame,
-                            batch_size=batch_size,
-                            shuffle=False)
-    return seq_train, seq_val
-
+class ValAttackBER(tf.keras.callbacks.Callback):
+    def __init__(self, val_seq, name="val_acc_attack"):
+        super().__init__(); self.val_seq=val_seq; self.name=name
+        self.metric=tf.keras.metrics.BinaryAccuracy()
+    def on_epoch_end(self, epoch, logs=None):
+        self.metric.reset_states()
+        for (bits, pcm), lbl in self.val_seq:
+            y_pred = self.model([bits, pcm], training=True)  # attacks ON
+            self.metric.update_state(lbl, y_pred)
+        logs[self.name] = float(self.metric.result().numpy())
+        print(f"\n{self.name}: {logs[self.name]:.4f}")
 
 # ---------------------------------------------------------------------------
-#  Main entry‑point
+# 8  Training helpers
 # ---------------------------------------------------------------------------
 
+def compile_phase_A(model):
+    # freeze embedder & adder
+    model.get_layer("wm_embed").trainable = False
+    model.get_layer("wm_add").trainable  = False
+    model.get_layer("chan").rp = 0.2
+    model.get_layer("chan").mp = 0.2 
+    model.get_layer("chan").snr = (10.,30.)
+    model.compile(optimizer=tf.keras.optimizers.Adam(1e-4),
+                  loss=tf.keras.losses.BinaryCrossentropy(),
+                  metrics=[tf.keras.metrics.BinaryAccuracy(name="acc")])
+
+
+def compile_phase_B(model, lambda_=0.75):
+    model.get_layer("wm_embed").alpha.trainable = True       # unfreeze α
+    # stronger attacks
+    model.get_layer("chan").set_strength('high')
+
+    # model.get_layer("chan").rp = 0.5
+    # model.get_layer("chan").mp = 0.5
+    # model.get_layer("chan").snr = (5.,25.)
+
+    bce = tf.keras.losses.BinaryCrossentropy()
+    def composite(bits_true, bits_pred):
+        acc = bce(bits_true, bits_pred)
+        pesq_pen = tf.reduce_mean(model.get_layer("delta_pesq").losses)  # scalar ΔPESQ
+        return lambda_ * acc + (1 - lambda_) * pesq_pen
+
+    model.compile(optimizer=tf.keras.optimizers.Adam(2e-5),
+                  loss=composite,
+                  metrics=[tf.keras.metrics.BinaryAccuracy(name="acc"),
+                           tf.keras.metrics.Mean(name="delta_pesq", dtype=tf.float32)])
+
+# ---------------------------------------------------------------------------
+# 9  Fit wrappers
+# ---------------------------------------------------------------------------
+
+def fit_model(model, seq_train, seq_val, ckpt_path, epochs):
+    """Train `model` and save the best weights to `ckpt_path`."""
+    cbs = [
+        # 1) save only the best model (highest val_ber)
+        tf.keras.callbacks.ModelCheckpoint(
+            ckpt_path, monitor='val_acc', mode='max', save_best_only=True
+        ),
+
+        # 2) stop early if val_ber hasn't improved for 5 epochs
+        tf.keras.callbacks.EarlyStopping(
+            monitor='val_acc', mode='max', patience=5, restore_best_weights=True
+        ),
+
+        # 3) extra metric: BER on validation set *with* ChannelSim attacks
+        ValAttackBER(seq_val),
+    ]
+
+    model.fit(
+        seq_train,
+        validation_data=seq_val,
+        epochs=epochs,
+        callbacks=cbs,
+        workers=4,
+        use_multiprocessing=True,
+    )
+    
+# ---------------------------------------------------------------------------
+# 10 Training stub
+# ---------------------------------------------------------------------------
 def main():
-    parser = argparse.ArgumentParser(description="Train DSS watermarking model")
-    parser.add_argument("--train_dir", required=True, help="Folder with training WAVs")
-    parser.add_argument("--val_dir",   required=True, help="Folder with validation WAVs")
-    parser.add_argument("--chkpt_dir", default="checkpoints", help="Where to save models")
-    parser.add_argument("--epochs", type=int, default=2)
-    parser.add_argument("--batch",  type=int, default=32)
-    parser.add_argument("--frame_size", type=int, default=160)
-    parser.add_argument("--bits_per_frame", type=int, default=64)
-    parser.add_argument("--alpha_init", type=float, default=0.04)
-    parser.add_argument("--beta", type=float, default=0.10)
-    args = parser.parse_args()
+    ap=argparse.ArgumentParser()
+    ap.add_argument('--train_dir',required=True)
+    ap.add_argument('--val_dir',required=True)
+    ap.add_argument('--phase',choices=['A','B','AB'],default='A')
+    ap.add_argument('--ckpt',help='Phase‑A checkpoint for Phase B')
+    ap.add_argument('--epochsA',type=int,default=15)
+    ap.add_argument('--epochsB',type=int,default=20)
+    args=ap.parse_args()
 
-    # TO DO: add args phase
+    os.makedirs('checkpoints',exist_ok=True)
 
-    os.makedirs(args.chkpt_dir, exist_ok=True)
+    seq_train=FrameSequence(args.train_dir, batch_size=args.batch)
+    seq_val  =FrameSequence(args.val_dir,   batch_size=args.batch, shuffle=False)
 
-    # 1 ‑ Data
-    seq_train, seq_val = get_sequences(args.train_dir, args.val_dir,
-                                       args.frame_size, args.bits_per_frame,
-                                       args.batch)
+    # custom objs for model reload
+    cust={'WatermarkEmbedding': WatermarkEmbedding,
+          'WatermarkAddition': WatermarkAddition,
+          'ChannelSim': ChannelSim,
+          'DeltaPESQ': DeltaPESQ}
+    
+    if args.phase == 'A':
+        model = build_model()
+        compile_phase_A(model)
+        fit_model(model,
+                  seq_train, seq_val,
+                  'checkpoints/phaseA_best.h5',
+                  args.epochsA)
+        
+    elif args.phase == 'B':
+        if not args.ckpt: 
+            raise SystemExit('Phase B needs --ckpt from Phase A')
+        model=tf.keras.models.load_model(args.ckpt, 
+                                         custom_objects=cust, 
+                                         compile=False)
+        compile_phase_B(model)
+        fit_model(model,
+                  seq_train, seq_val,
+                  'checkpoints/phaseB_best.h5',
+                  args.epochsB)
+        
+    else: #AB chain
+        model = build_model()
+        compile_phase_A(model)
+        fit_model(model,
+                  seq_train, seq_val,
+                  'checkpoints/phaseA_best.h5',
+                  args.epochsA)
+        model=tf.keras.models.load_model('checkpoints/phaseA_best.h5', 
+                                         custom_objects=cust, 
+                                         compile=False)
+        compile_phase_B(model)
+        fit_model(model,
+                  seq_train, seq_val,
+                  'checkpoints/phaseB_best.h5',
+                  args.epochsB)
 
-    # 2 ‑ Model
-    model = build_wm_model(args.frame_size, args.bits_per_frame,
-                           args.alpha_init, args.beta)
-
-    model.summary(line_length=120)
-
-    # 3 ‑ Callbacks
-    ckpt_path = os.path.join(args.chkpt_dir,
-                             "dsswm_{epoch:02d}_{val_acc:.4f}.h5")
-    cb_chkpt  = tf.keras.callbacks.ModelCheckpoint(ckpt_path,
-                                                   monitor="val_acc",
-                                                   mode="max",
-                                                   save_best_only=True,
-                                                   save_weights_only=False)
-    cb_es     = tf.keras.callbacks.EarlyStopping(monitor="val_acc", mode="max",
-                                                patience=5, restore_best_weights=True)
-    log_path  = os.path.join(args.chkpt_dir, "training_log.csv")
-    cb_csv    = tf.keras.callbacks.CSVLogger(log_path, append=True)
-
-    # 4 ‑ Fit
-    model.fit(seq_train,
-              validation_data=seq_val,
-              epochs=args.epochs,
-              callbacks=[cb_chkpt, cb_es, cb_csv],
-              workers=4, use_multiprocessing=True)
-
-    print("Training complete. Best model saved to:", args.chkpt_dir)
+    print('Training complete. Best checkpoints saved in ./checkpoints/')
 
 
-if __name__ == "__main__":
+if __name__=='__main__':
     main()
