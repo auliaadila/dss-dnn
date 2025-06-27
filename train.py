@@ -36,7 +36,7 @@ class FrameSequence(tf.keras.utils.Sequence):
     """Streams clean PCM + random 64‑bit word repeated over `seq_frames`."""
     # change seq_frames? no need
     def __init__(self, wav_folder: str, frame_size=160, seq_frames=15,
-                 bits_per_frame=64, batch_size=32, shuffle=True, fs=16_000):
+                 bits_per_frame=64, bits_in=None, batch_size=32, shuffle=True, fs=16_000):
         self.paths = sorted(glob.glob(os.path.join(wav_folder, "**", "*.wav"), recursive=True))
         if not self.paths:
             raise RuntimeError("No WAVs found under", wav_folder)
@@ -48,6 +48,7 @@ class FrameSequence(tf.keras.utils.Sequence):
         self.shuffle = shuffle
         self.fs = fs
         self.indices = []  # (file_idx, start_sample)
+        self.bits_in = np.random.randint(0, 2, size=(self.batch_size, self.bits_per_frame), dtype='int32')
         for fi, p in enumerate(self.paths):
             n = sf.info(p).frames
             for s in range(0, n - self.window + 1, self.window):
@@ -58,14 +59,16 @@ class FrameSequence(tf.keras.utils.Sequence):
     def __len__(self):
         return math.ceil(len(self.indices) / self.batch_size)
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx): #one-batch-of-windows-at-a-time
         batch_idx = self.indices[idx*self.batch_size : (idx+1)*self.batch_size]
-        pcm, bits = [], []
+        pcm = []
         for fi, st in batch_idx:
             p = self.paths[fi]
             # Get audio
             raw, _ = sf.read(p, start=st, stop=st+self.window, dtype="float32")
-            pcm.append(np.expand_dims(raw, -1))
+            raw_ = np.expand_dims(raw, -1) # (2400, 1)
+            pcm.append(raw_)
+            # print("DATALOADER raw pcm:", raw_.shape)
             
             # Generate bits
             # Different 64-bit word in each 15 frames
@@ -73,13 +76,32 @@ class FrameSequence(tf.keras.utils.Sequence):
             
             # one 64-bit word, shared by all 15 frames
             # [later used in SpreadLayer] bits: (B, seq_frames, bits_per_frame)
-            word = np.random.randint(0, 2, (1, self.bits_per_frame))      # (1, 64)
-            bits_full = np.repeat(word, self.seq_frames, axis=0)          # (15, 64)
-            bits.append(bits_full)
+            # word = np.random.randint(0, 2, (self.batch_size, self.bits_per_frame))      # (1, 64)
+            # bits_full = np.repeat(word, self.seq_frames, axis=0)          # (15, 64) #?
+            # bits.append(bits_full)
 
         pcm = np.stack(pcm)
-        bits = np.stack(bits).astype(np.float32)
-        return [bits, pcm], bits  # labels = bits (unused)
+        # bits = np.stack(bits).astype(np.float32)
+        ''' PREVIOUS
+        print("DATALOADER bits:", bits.shape)
+        print("DATALOADER pcm:", pcm.shape)
+        DATALOADER bits: (13, 15, 64)
+        DATALOADER pcm: (13, 2400, 1)
+        DATALOADER bits: (32, 15, 64)
+        DATALOADER pcm: (32, 2400, 1)
+        '''
+        actual_batch_size = len(pcm)
+        bits_in = np.random.randint(0, 2, size=(actual_batch_size, self.bits_per_frame), dtype='int32')
+
+        # CURRENT
+        print("DATALOADER bits:", bits_in.shape)
+        print("DATALOADER pcm:", pcm.shape)
+        # DATALOADER bits: (13, 64)
+        # DATALOADER pcm: (13, 2400, 1)
+        
+        # input: [bits_in, pcm], output: bits_in
+
+        return [bits_in, pcm], bits_in  # labels = bits (unused)
 
     def on_epoch_end(self):
         if self.shuffle:
@@ -128,26 +150,65 @@ class LPAnalysis(tf.keras.layers.Layer):
 # ---------------------------------------------------------------------------
 # 3) SpreadLayer & WatermarkEmbedding (+α)
 # ---------------------------------------------------------------------------
+'''
 class SpreadLayer(tf.keras.layers.Layer):
     def __init__(self, frame_size=160, **kw):
-        super().__init__(**kw); self.frame_size=frame_size
+        super().__init__(**kw)
+        self.frame_size=frame_size
     def call(self, bits, pcm_len):
-        chips = tf.repeat(bits, repeats=self.frame_size, axis=1)
-        chips = tf.reshape(chips, (-1, pcm_len, 1))
+        # print("SPREAD LAYER")
+        # print("bits:", bits.shape)
+        # print("pcm_len:", pcm_len.shape)
+        time_steps = tf.shape(residual)[1] 
+        bits_expanded = tf.expand_dims(bits_in, axis=1)  # (B, 64) -> (B, 1, 64)
+        bits_tiled = tf.tile(bits_expanded, [1, time_steps, 1])  # (B, 1, 64) -> (B, time, 64)
+        # chips = tf.repeat(bits, repeats=self.frame_size, axis=1)
+        # chips = tf.reshape(chips, (-1, pcm_len, 1))
+        print("chips:", chips.shape)
         return 2.*chips-1.
+'''
 
 class WatermarkEmbedding(tf.keras.layers.Layer):
     def __init__(self, frame_size=160, alpha_init=0.05, **kw):
         super().__init__(**kw)
         self.frame_size=frame_size
         self.alpha = tf.Variable(alpha_init, trainable=True, dtype=tf.float32) #change this into adaptive, or learnable
-        self.spread = SpreadLayer(frame_size) #bits_in (-1, pcm_len, 1)
+        # self.spread = SpreadLayer(frame_size) #bits_in (-1, pcm_len, 1)
         self.lp = LPAnalysis(frame_size=frame_size)
+        # print("alpha:", self.alpha.shape)
     def call(self, inputs):
         bits, pcm = inputs
         res = self.lp(pcm)
-        chips = self.spread(bits, tf.shape(pcm)[1])  # (-1, T, 1)
-        return res + self.alpha * chips
+        # chips = self.spread(bits, tf.shape(pcm)[1])  # (-1, T, 1)
+        print("=====> WATERMARK SHAPE")
+
+        # import IPython
+        # IPython.embed()
+
+        # tf.print("pcm shape:", tf.shape(pcm))
+        print("res shape:", res.shape)
+        print("init bits shape:", bits.shape)
+        
+
+        # print("pcm shape:", tf.shape(pcm))
+        # print("res shape:", tf.shape(res))
+        # print("call chips shape:", tf.shape(chips))
+
+        # Incompatible shapes: [32,64] vs. [32,2400,1]
+        time_steps = tf.shape(res)[1] 
+        bits_expanded = tf.expand_dims(bits, axis=1) 
+        print("expanded bits shape:", bits_expanded.shape)
+        bits_tiled = tf.tile(bits_expanded, [1, time_steps, 1])
+        print("tiled bits shape:", bits_tiled.shape)
+        bits = 2.*bits_tiled-1.
+
+        wm_per_bit = bits * res                      # broadcast mult 
+        print("wm_per_bit shape:", wm_per_bit.shape)
+        wm_single  = self.alpha * tf.reduce_sum(
+                        wm_per_bit, axis=-1, keepdims=True)  # (B,T,1)
+        print("wm_single shape:", wm_single.shape)
+        return wm_single
+
 
 # ---------------------------------------------------------------------------
 # 4) WatermarkAddition, ChannelSim, Extractor
@@ -196,17 +257,17 @@ class ChannelSim(tf.keras.layers.Layer):
         resample_prob: float = 0.3,
         mp3_prob: float = 0.3,
         opus_prob: float = 0.0,
-        clip_dbfs: float | None = None,
+        # clip_dbfs: float | None = None,
         **kwargs,
     ):
         super().__init__(trainable=False, **kwargs)
-        self.fs  = fs
+        self.fs  = tf.cast(fs, tf.int64)
         self.snr = snr_db
         self.resample_rates = list(resample_rates)
         self.rp  = resample_prob
         self.mp3 = mp3_prob
         self.opu = opus_prob
-        self.clip_dbfs = clip_dbfs
+        # self.clip_dbfs = clip_dbfs
 
     # ---------------------------------------------------------
     # helpers
@@ -217,6 +278,7 @@ class ChannelSim(tf.keras.layers.Layer):
         return x + tf.random.normal(tf.shape(x), stddev=tf.sqrt(noise_pwr))
 
     def _resample_once(self, y, rate_mid):
+        rate_mid = tf.cast(rate_mid, tf.int64)
         y = tfio.audio.resample(y, rate_in=self.fs, rate_out=rate_mid)
         return tfio.audio.resample(y, rate_in=rate_mid, rate_out=self.fs)
 
@@ -254,21 +316,24 @@ class ChannelSim(tf.keras.layers.Layer):
             y = tf.squeeze(y, -1)
             y = self._resample_once(y, rate_mid)
             y = tf.expand_dims(y, -1)
+            y = tf.stop_gradient(y) 
 
         # MP3 attack
         if tf.random.uniform([]) < self.mp3:
             y = tf.squeeze(y, -1)
             y = self._mp3_rt(y)
             y = tf.expand_dims(y, -1)
+            y = tf.stop_gradient(y) 
 
         # Opus attack
         if tf.random.uniform([]) < self.opu:
             y = tf.squeeze(y, -1)
             y = self._opus_rt(y)
             y = tf.expand_dims(y, -1)
+            y = tf.stop_gradient(y) 
 
         # Optional peak clipping / normalisation
-        y = self._peak_norm(y)
+        # y = self._peak_norm(y)
         return y
 
     # ---------------------------------------------------------
@@ -319,7 +384,10 @@ class DeltaPESQ(tf.keras.layers.Layer):
     def __init__(self, fs=16000, name="delta_pesq", **kw):
         super().__init__(name=name, trainable=False, **kw)
         self.fs = fs
-        self.add_metric(0.0, name=name, aggregation="mean")  # placeholder
+        # self.add_metric(0.0, name=name, aggregation="mean")  # placeholder
+        # if necessary
+        # dummy = tf.constant(0.0, dtype=tf.float32)
+        # self.add_metric(dummy, name=name)
 
     def call(self, inputs):
         clean, deg = inputs
@@ -359,10 +427,20 @@ class DeltaPESQ(tf.keras.layers.Layer):
 #                   metrics=[ber_metric])
 #     return model
 
-def build_model(frame_size=160, seq_frames=15, bpf=64,
-                resample_p=0.2, resample_r=(11025, 22050, 44100), mp3_p=0.2, opus_p=0.0, snr=(10.,30.), clip_d=0.0): #attack purpose
-    bits_in = tf.keras.Input(shape=(seq_frames, bpf), name="bits")
+def build_model(frame_size=160, seq_frames=15, bits_per_frame=64,
+                resample_p=0.2, resample_r=(11025, 22050, 44100), mp3_p=0.2, opus_p=0.0, snr=(10.,30.), 
+                # clip_d=0.0
+                ): #attack purpose
+    bits_in = tf.keras.Input(shape=bits_per_frame, name="bits")
+    # bits_in = tf.keras.Input(shape=(seq_frames, bits_per_frame), name="bits") #(15,64)
     pcm_in  = tf.keras.Input(shape=(frame_size*seq_frames, 1), name="pcm_clean")
+
+    print("bits_in:", bits_in.shape)
+    print("pcm_in:", pcm_in.shape)
+    '''
+    bits_in: (None, 15, 64) -> (None, 64)
+    pcm_in: (None, 2400, 1)
+    '''
 
     # Watermark path
     res_w   = WatermarkEmbedding(frame_size, name="wm_embed")([bits_in, pcm_in])
@@ -372,15 +450,18 @@ def build_model(frame_size=160, seq_frames=15, bpf=64,
     pcm_w   = DeltaPESQ(name="delta_pesq")( [pcm_in, pcm_w] )
 
     # Channel attacks
+    '''
     attacked = ChannelSim(resample_prob=resample_p, 
                           resample_rates=resample_r,
                           mp3_prob=mp3_p, 
                           opus_prob=opus_p, 
                           snr_db=snr,
-                          clip_dbfs=clip_d, name="chan")(pcm_w)
+                        #   clip_dbfs=clip_d, 
+                          name="chan")(pcm_w)
+    '''
 
     # Extract bits
-    bits_out = build_extractor(bpf, seq_frames)(attacked)
+    bits_out = build_extractor(bits_per_frame, seq_frames)(pcm_w)
 
     model=tf.keras.Model([bits_in, pcm_in], bits_out, name='dl_lp_dss')
 
@@ -390,6 +471,7 @@ def build_model(frame_size=160, seq_frames=15, bpf=64,
 # 7  Validation BER under attack
 # ---------------------------------------------------------------------------
 
+# later
 class ValAttackBER(tf.keras.callbacks.Callback):
     def __init__(self, val_seq, name="val_acc_attack"):
         super().__init__(); self.val_seq=val_seq; self.name=name
@@ -410,9 +492,9 @@ def compile_phase_A(model):
     # freeze embedder & adder
     model.get_layer("wm_embed").trainable = False
     model.get_layer("wm_add").trainable  = False
-    model.get_layer("chan").rp = 0.2
-    model.get_layer("chan").mp = 0.2 
-    model.get_layer("chan").snr = (10.,30.)
+    # model.get_layer("chan").rp = 0.2
+    # model.get_layer("chan").mp = 0.2 
+    # model.get_layer("chan").snr = (10.,30.)
     model.compile(optimizer=tf.keras.optimizers.Adam(1e-4),
                   loss=tf.keras.losses.BinaryCrossentropy(),
                   metrics=[tf.keras.metrics.BinaryAccuracy(name="acc")])
@@ -421,7 +503,7 @@ def compile_phase_A(model):
 def compile_phase_B(model, lambda_=0.75):
     model.get_layer("wm_embed").alpha.trainable = True       # unfreeze α
     # stronger attacks
-    model.get_layer("chan").set_strength('high')
+    # model.get_layer("chan").set_strength('high')
 
     # model.get_layer("chan").rp = 0.5
     # model.get_layer("chan").mp = 0.5
@@ -456,7 +538,7 @@ def fit_model(model, seq_train, seq_val, ckpt_path, epochs):
         ),
 
         # 3) extra metric: BER on validation set *with* ChannelSim attacks
-        ValAttackBER(seq_val),
+        # ValAttackBER(seq_val),
     ]
 
     model.fit(
@@ -479,6 +561,7 @@ def main():
     ap.add_argument('--ckpt',help='Phase‑A checkpoint for Phase B')
     ap.add_argument('--epochsA',type=int,default=15)
     ap.add_argument('--epochsB',type=int,default=20)
+    ap.add_argument('--batch', type=int, default=32)
     args=ap.parse_args()
 
     os.makedirs('checkpoints',exist_ok=True)
@@ -489,7 +572,7 @@ def main():
     # custom objs for model reload
     cust={'WatermarkEmbedding': WatermarkEmbedding,
           'WatermarkAddition': WatermarkAddition,
-          'ChannelSim': ChannelSim,
+        #   'ChannelSim': ChannelSim,
           'DeltaPESQ': DeltaPESQ}
     
     if args.phase == 'A':
