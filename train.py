@@ -124,28 +124,36 @@ class LPAnalysis(tf.keras.layers.Layer):
         n_frames = T // self.frame_size
         x = x.reshape(B, n_frames, self.frame_size)
         res = np.zeros_like(x)
+
         for b in range(B):
-            for f in range(n_frames): #process per frame
+            for f in range(n_frames):
                 frm = x[b, f]
-                r = np.correlate(frm, frm, mode='full')[self.frame_size-1 : self.frame_size+self.order]
-                # Levinson‑Durbin
-                a = np.zeros(self.order+1)
-                a[0]=1
-                e=r[0]
-                for i in range(1, self.order+1):
+                r = np.correlate(frm, frm, mode='full')[self.frame_size - 1 : self.frame_size + self.order]
+                
+                a = np.zeros(self.order + 1, dtype=np.float64)
+                a[0] = 1.0
+                e = r[0] if r[0] != 0 else 1e-8  # avoid division by zero
+
+                for i in range(1, self.order + 1):
                     acc = r[i] - np.dot(a[1:i], r[1:i][::-1])
-                    k = acc/e
-                    a[1:i] -= k*a[i-1:0:-1]
-                    a[i]=k
-                    e *= (1-k*k)
-                res[b, f] = ss.lfilter(a, [1], frm)
+                    k = acc / e if e != 0 else 0
+                    a_new = a[1:i] - k * a[i-1:0:-1]
+                    a[1:i] = a_new
+                    a[i] = k
+                    e *= (1.0 - k * k)
+                    if e <= 1e-8:  # prevent numerical instability
+                        e = 1e-8
+
+                res[b, f] = ss.lfilter(a, [1.0], frm)
+
         return res.reshape(B, -1).astype(np.float32)
 
     def call(self, x):
-        if x.shape.rank==3: x=tf.squeeze(x,-1)
-        r = tf.numpy_function(self._lpc_residual, [x], tf.float32) #check this: shape, logic
-        r.set_shape(x.shape) #check this: shape
-        return tf.expand_dims(r, -1)
+        if x.shape.rank == 3:
+            x = tf.squeeze(x, -1)  # (B, T)
+        r = tf.numpy_function(self._lpc_residual, [x], tf.float32)
+        r.set_shape(x.shape)  # match input shape (B, T)
+        return tf.expand_dims(r, -1)  # output shape (B, T, 1)
 
 # ---------------------------------------------------------------------------
 # 3) SpreadLayer & WatermarkEmbedding (+α)
@@ -172,7 +180,7 @@ class WatermarkEmbedding(tf.keras.layers.Layer):
     def __init__(self, frame_size=160, alpha_init=0.05, **kw):
         super().__init__(**kw)
         self.frame_size=frame_size
-        self.alpha = tf.Variable(alpha_init, trainable=True, dtype=tf.float32) #change this into adaptive, or learnable
+        self.alpha_init = tf.Variable(alpha_init, trainable=True, dtype=tf.float32) #change this into adaptive, or learnable
         # self.spread = SpreadLayer(frame_size) #bits_in (-1, pcm_len, 1)
         self.lp = LPAnalysis(frame_size=frame_size)
         # print("alpha:", self.alpha.shape)
@@ -180,14 +188,14 @@ class WatermarkEmbedding(tf.keras.layers.Layer):
         bits, pcm = inputs
         res = self.lp(pcm)
         # chips = self.spread(bits, tf.shape(pcm)[1])  # (-1, T, 1)
-        print("=====> WATERMARK SHAPE")
+        # print("=====> WATERMARK SHAPE")
 
         # import IPython
         # IPython.embed()
 
         # tf.print("pcm shape:", tf.shape(pcm))
-        print("res shape:", res.shape)
-        print("init bits shape:", bits.shape)
+        # print("res shape:", res.shape)
+        # print("init bits shape:", bits.shape)
         
 
         # print("pcm shape:", tf.shape(pcm))
@@ -197,17 +205,25 @@ class WatermarkEmbedding(tf.keras.layers.Layer):
         # Incompatible shapes: [32,64] vs. [32,2400,1]
         time_steps = tf.shape(res)[1] 
         bits_expanded = tf.expand_dims(bits, axis=1) 
-        print("expanded bits shape:", bits_expanded.shape)
+        # print("expanded bits shape:", bits_expanded.shape)
         bits_tiled = tf.tile(bits_expanded, [1, time_steps, 1])
-        print("tiled bits shape:", bits_tiled.shape)
+        # print("tiled bits shape:", bits_tiled.shape)
         bits = 2.*bits_tiled-1.
 
         wm_per_bit = bits * res                      # broadcast mult 
-        print("wm_per_bit shape:", wm_per_bit.shape)
-        wm_single  = self.alpha * tf.reduce_sum(
+        # print("wm_per_bit shape:", wm_per_bit.shape)
+        wm_single  = self.alpha_init * tf.reduce_sum(
                         wm_per_bit, axis=-1, keepdims=True)  # (B,T,1)
-        print("wm_single shape:", wm_single.shape)
+        # print("wm_single shape:", wm_single.shape)
         return wm_single
+    
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            "frame_size": self.frame_size,
+            "alpha_init": self.alpha_init,
+        })
+        return config
 
 
 # ---------------------------------------------------------------------------
@@ -218,6 +234,12 @@ class WatermarkAddition(tf.keras.layers.Layer):
         super().__init__(**kw); self.beta=tf.Variable(beta, trainable=False) #change this into adaptive, or learnable
     def call(self, pcm, res_w):
         return pcm + self.beta*res_w
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            "beta": self.beta
+        })
+        return config
 
 import tensorflow as tf
 import tensorflow_io as tfio
@@ -354,58 +376,59 @@ class ChannelSim(tf.keras.layers.Layer):
             self.snr = (10.0, 30.0)
             self.rp, self.mp3, self.opu = 0.3, 0.3, 0.0
 
-def build_extractor(bits_per_frame, seq_frames, filters=32):
-    inp=tf.keras.Input(shape=(None,1))
+def build_extractor(bits_per_message=64, filters=32):
+    inp = tf.keras.Input(shape=(None, 1))  # (B, T, 1)
 
-    x=tf.keras.layers.Conv1D(filters,7,2,padding='same')(inp)
-    x=tf.keras.layers.BatchNormalization()(x)
-    x=tf.keras.layers.LeakyReLU(0.2)(x)
+    x = tf.keras.layers.Conv1D(filters, 7, 2, padding='same')(inp)
+    x = tf.keras.layers.BatchNormalization()(x)
+    x = tf.keras.layers.LeakyReLU(0.2)(x)
 
-    x=tf.keras.layers.Conv1D(filters*2,5,2,padding='same')(x)
-    x=tf.keras.layers.BatchNormalization()(x)
-    x=tf.keras.layers.LeakyReLU(0.2)(x)
+    x = tf.keras.layers.Conv1D(filters * 2, 5, 2, padding='same')(x)
+    x = tf.keras.layers.BatchNormalization()(x)
+    x = tf.keras.layers.LeakyReLU(0.2)(x)
 
-    x=tf.keras.layers.GlobalAveragePooling1D()(x)
-    out=tf.keras.layers.Dense(bits_per_frame*seq_frames,activation='sigmoid')(x)
-    out=tf.keras.layers.Reshape((seq_frames,bits_per_frame))(out)
+    # Collapse time dimension — entire audio sequence pooled
+    x = tf.keras.layers.GlobalAveragePooling1D()(x)
 
-    return tf.keras.Model(inp,out,name='extractor')
+    # Final output: 64-bit prediction for entire message
+    out = tf.keras.layers.Dense(bits_per_message, activation='sigmoid')(x)
+
+    return tf.keras.Model(inp, out, name='extractor')
 
 # ---------------------------------------------------------------------------
 # 5) ΔPESQ metric / loss helper
 # ---------------------------------------------------------------------------
     
 class DeltaPESQ(tf.keras.layers.Layer):
-    """Computes PESQ drop (clean – degraded) and adds it to the model loss.
-
-    • Accepts two tensors: `[clean_pcm, degraded_pcm]` with shape (B, T, 1).
-    • Uses `tf.numpy_function` – gradients do **not** flow through PESQ.
-    """
     def __init__(self, fs=16000, name="delta_pesq", **kw):
         super().__init__(name=name, trainable=False, **kw)
         self.fs = fs
-        # self.add_metric(0.0, name=name, aggregation="mean")  # placeholder
-        # if necessary
-        # dummy = tf.constant(0.0, dtype=tf.float32)
-        # self.add_metric(dummy, name=name)
 
     def call(self, inputs):
         clean, deg = inputs
-        # flatten to 1‑D for PESQ call
         def _pesq_np(c, d):
             try:
                 from pesq import pesq as pesq_score
                 sc = pesq_score(self.fs, c, c, 'wb')
                 sd = pesq_score(self.fs, c, d, 'wb')
-                return np.float32(sc-sd)  # ΔPESQ (clean – degraded)
+                return np.float32(sc - sd)
             except Exception:
-                warnings.warn('PESQ unavailable — ΔPESQ=0'); return np.float32(0)
+                warnings.warn('PESQ unavailable — ΔPESQ=0')
+                return np.float32(0)
         delta = tf.numpy_function(_pesq_np,
                                   [tf.squeeze(clean), tf.squeeze(deg)],
                                   tf.float32)
-        self.add_loss(delta)        # contributes to total loss
+        self.add_loss(delta)
         self.add_metric(delta, name=self.name)
-        return deg                  # pass‑through
+        return deg
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            "fs": self.fs,
+            "name": self.name
+        })
+        return config
 
 
 # ---------------------------------------------------------------------------
