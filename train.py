@@ -94,8 +94,8 @@ class FrameSequence(tf.keras.utils.Sequence):
         bits_in = np.random.randint(0, 2, size=(actual_batch_size, self.bits_per_frame), dtype='int32')
 
         # CURRENT
-        print("DATALOADER bits:", bits_in.shape)
-        print("DATALOADER pcm:", pcm.shape)
+        # print("DATALOADER bits:", bits_in.shape)
+        # print("DATALOADER pcm:", pcm.shape)
         # DATALOADER bits: (13, 64)
         # DATALOADER pcm: (13, 2400, 1)
         
@@ -177,67 +177,72 @@ class SpreadLayer(tf.keras.layers.Layer):
 '''
 
 class WatermarkEmbedding(tf.keras.layers.Layer):
-    def __init__(self, frame_size=160, alpha_init=0.05, **kw):
-        super().__init__(**kw)
-        self.frame_size=frame_size
-        self.alpha_init = tf.Variable(alpha_init, trainable=True, dtype=tf.float32) #change this into adaptive, or learnable
-        # self.spread = SpreadLayer(frame_size) #bits_in (-1, pcm_len, 1)
+    def __init__(self, frame_size=160, alpha=0.05, **kwargs):
+        super().__init__(**kwargs)
+        self.frame_size = frame_size
+        self.alpha_init = alpha
         self.lp = LPAnalysis(frame_size=frame_size)
-        # print("alpha:", self.alpha.shape)
+
+    def build(self, input_shape):
+        self.alpha = self.add_weight(
+            name="alpha",
+            shape=(),
+            initializer=tf.constant_initializer(self.alpha_init),
+            trainable=True,
+        )
+
     def call(self, inputs):
         bits, pcm = inputs
         res = self.lp(pcm)
-        # chips = self.spread(bits, tf.shape(pcm)[1])  # (-1, T, 1)
-        # print("=====> WATERMARK SHAPE")
-
-        # import IPython
-        # IPython.embed()
-
-        # tf.print("pcm shape:", tf.shape(pcm))
-        # print("res shape:", res.shape)
-        # print("init bits shape:", bits.shape)
-        
-
-        # print("pcm shape:", tf.shape(pcm))
-        # print("res shape:", tf.shape(res))
-        # print("call chips shape:", tf.shape(chips))
-
-        # Incompatible shapes: [32,64] vs. [32,2400,1]
         time_steps = tf.shape(res)[1] 
+
+        # expand bits to res shape
         bits_expanded = tf.expand_dims(bits, axis=1) 
-        # print("expanded bits shape:", bits_expanded.shape)
         bits_tiled = tf.tile(bits_expanded, [1, time_steps, 1])
-        # print("tiled bits shape:", bits_tiled.shape)
         bits = 2.*bits_tiled-1.
 
+        # watermark spreading
         wm_per_bit = bits * res                      # broadcast mult 
-        # print("wm_per_bit shape:", wm_per_bit.shape)
-        wm_single  = self.alpha_init * tf.reduce_sum(
+        wm_single  = self.alpha * tf.reduce_sum(
                         wm_per_bit, axis=-1, keepdims=True)  # (B,T,1)
-        # print("wm_single shape:", wm_single.shape)
         return wm_single
-    
+
+
     def get_config(self):
         config = super().get_config()
         config.update({
             "frame_size": self.frame_size,
-            "alpha_init": self.alpha_init,
+            "alpha": self.alpha_init
         })
         return config
 
-
+    
 # ---------------------------------------------------------------------------
 # 4) WatermarkAddition, ChannelSim, Extractor
 # ---------------------------------------------------------------------------
 class WatermarkAddition(tf.keras.layers.Layer):
-    def __init__(self, beta=0.1, **kw):
-        super().__init__(**kw); self.beta=tf.Variable(beta, trainable=False) #change this into adaptive, or learnable
+    def __init__(self, frame_size=160, beta=0.1, **kwargs):
+        super().__init__(**kwargs)
+        self.frame_size = frame_size
+        self.beta_init = beta
+
+    def build(self, input_shape):
+        self.beta = self.add_weight(
+            name="beta",
+            shape=(),
+            initializer=tf.constant_initializer(self.beta_init),
+            trainable=False,
+        )
+
     def call(self, pcm, res_w):
-        return pcm + self.beta*res_w
+        # beta = tf.clip_by_value(self.beta, 0.0, 1.0)  # 👈 adjust bounds as needed
+        return pcm + self.beta * res_w
+
     def get_config(self):
         config = super().get_config()
         config.update({
-            "beta": self.beta
+            "frame_size": self.frame_size,
+            "beta": self.beta_init
         })
         return config
 
@@ -376,7 +381,7 @@ class ChannelSim(tf.keras.layers.Layer):
             self.snr = (10.0, 30.0)
             self.rp, self.mp3, self.opu = 0.3, 0.3, 0.0
 
-def build_extractor(bits_per_message=64, filters=32):
+def build_extractor(bits_per_frame=64, filters=32):
     inp = tf.keras.Input(shape=(None, 1))  # (B, T, 1)
 
     x = tf.keras.layers.Conv1D(filters, 7, 2, padding='same')(inp)
@@ -391,7 +396,7 @@ def build_extractor(bits_per_message=64, filters=32):
     x = tf.keras.layers.GlobalAveragePooling1D()(x)
 
     # Final output: 64-bit prediction for entire message
-    out = tf.keras.layers.Dense(bits_per_message, activation='sigmoid')(x)
+    out = tf.keras.layers.Dense(bits_per_frame, activation='sigmoid')(x)
 
     return tf.keras.Model(inp, out, name='extractor')
 
@@ -484,7 +489,7 @@ def build_model(frame_size=160, seq_frames=15, bits_per_frame=64,
     '''
 
     # Extract bits
-    bits_out = build_extractor(bits_per_frame, seq_frames)(pcm_w)
+    bits_out = build_extractor(bits_per_frame)(pcm_w)
 
     model=tf.keras.Model([bits_in, pcm_in], bits_out, name='dl_lp_dss')
 
