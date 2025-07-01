@@ -1,39 +1,66 @@
 #!/usr/bin/env python3
-"""make_subset.py – create a ≈60-hour LibriSpeech subset
--------------------------------------------------------
-• Walks through <root>/{train-clean-100,train-other-500}/reader/chapter/*.flac
-• Randomly selects files until 60 h ±1 % reached
-• Converts each FLAC to either 16-kHz mono WAV **or** raw 16-bit PCM (*.s16)
-  (choice via --format {wav,s16})
-• Writes all files into a flat output directory + a manifest CSV
-
-# 60-hour subset as raw 16-bit PCM
-python make_subset.py  /data/LibriSpeech  /data/Libri60h_s16  --format s16
-
+"""make_subset.py – build train/val/test subsets from LibriSpeech archives
+---------------------------------------------------------------------------
+* Auto‑detects `<root>/<split>.tar.gz`, extracts if the split folder is
+  missing, then collects the `.flac`s.
+* Converts to mono 16‑kHz **WAV** or **.s16** (raw int16) via `--format`.
+* Picks exactly `--train-minutes`,  `--val-minutes`, `--test-minutes`.
+* Outputs three flat dirs (`train/`, `val/`, `test/`) + manifest CSVs.
 """
-import argparse, csv, os, random, warnings
+import argparse, csv, random, tarfile, warnings
 from pathlib import Path
+import os
 
 import numpy as np
 import soundfile as sf
 
-TARGET_HOURS  = 60.0
-TOLERANCE_H   = 0.60          # ±1 %  (0.6 h)
-FS_OUT        = 16_000
+FS_OUT = 16_000
+RNG_SEED = 42
+SPLITS = {
+    "train": "train-clean-100",
+    "val"  : "dev-clean",
+    "test" : "test-clean",
+}
 
-# -----------------------------------------------------------------------------
-# Helper functions
-# -----------------------------------------------------------------------------
-# def collect_flacs(root: Path, splits=("train-clean-100", "train-other-500")):
-def collect_flacs(root: Path, splits=("train-clean-100")):
-    flacs = []
-    for s in splits:
-        flacs.extend((root / s).rglob("*.flac"))
-    return sorted(flacs)
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def ensure_split_extracted(root: Path, split_name: str):
+    """If `<split>.tar.gz` exists and folder is absent, extract it."""
+    folder = root / split_name
+    if folder.exists():
+        return folder
+    tar_path = root / f"{split_name}.tar.gz"
+    if not tar_path.exists():
+        raise FileNotFoundError(f"Missing {folder} and {tar_path}")
+    print(f"Extracting {tar_path} …")
+    with tarfile.open(tar_path) as tar:
+        def is_within_directory(directory, target):
+            import os
+            abs_directory = os.path.abspath(directory)
+            abs_target = os.path.abspath(target)
+            prefix = os.path.commonprefix([abs_directory, abs_target])
+            return prefix == abs_directory
+        def safe_extract(tar_obj, path="."):
+            for member in tar_obj.getmembers():
+                member_path = os.path.join(path, member.name)
+                if not is_within_directory(path, member_path):
+                    raise Exception("Attempted Path Traversal in Tar File")
+            tar_obj.extractall(path)
+        safe_extract(tar, root)
+    return folder
+
+
+def collect_flacs(root: Path, split_key: str):
+    split_dir = ensure_split_extracted(root, SPLITS[split_key])
+    return sorted(split_dir.rglob("*.flac"))
+
 
 def flac_duration(path: Path):
     with sf.SoundFile(path) as f:
         return len(f) / f.samplerate
+
 
 def _load_resample_mono(path: Path):
     audio, fs = sf.read(path, dtype="float32")
@@ -44,8 +71,10 @@ def _load_resample_mono(path: Path):
         audio = librosa.resample(audio, orig_sr=fs, target_sr=FS_OUT)
     return audio
 
+
 def flac_to_wav(src: Path, dst: Path):
     sf.write(dst, _load_resample_mono(src), FS_OUT)
+
 
 def flac_to_s16(src: Path, dst: Path):
     pcm = _load_resample_mono(src)
@@ -53,56 +82,55 @@ def flac_to_s16(src: Path, dst: Path):
     with open(dst, "wb") as f:
         pcm16.tofile(f)
 
-# -----------------------------------------------------------------------------
-# Main logic
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Sampling routine
+# ---------------------------------------------------------------------------
 
-def main(src_root: Path, dst_root: Path, fmt: str):
-    random.seed(42)
-    flacs = collect_flacs(src_root)
-    if not flacs:
-        raise SystemExit(f"No .flac files found under {src_root}")
+def sample_split(flacs, minutes_target, fmt, out_dir: Path):
     random.shuffle(flacs)
-
-    chosen, tot_sec = [], 0.0
+    goal_sec = minutes_target * 60
+    chosen, total = [], 0.0
     for f in flacs:
-        dur = flac_duration(f)
-        if tot_sec + dur > (TARGET_HOURS + TOLERANCE_H) * 3600:
+        d = flac_duration(f)
+        if total + d > goal_sec:
             continue
-        chosen.append((f, dur))
-        tot_sec += dur
-        if tot_sec >= (TARGET_HOURS - TOLERANCE_H) * 3600:
+        chosen.append((f, d))
+        total += d
+        if total >= goal_sec:
             break
+    if total < 0.99 * goal_sec:
+        warnings.warn(f"Only {total/60:.1f} min collected vs {minutes_target} min")
 
-    print(f"Selected {len(chosen)} files → {tot_sec/3600:.2f} h")
-
-    dst_root.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    to_fn = flac_to_wav if fmt == "wav" else flac_to_s16
+    ext   = ".wav" if fmt == "wav" else ".s16"
     for src, _ in chosen:
-        base = src.stem     # 19-198-0001
-        if fmt == "wav":
-            flac_to_wav(src, dst_root / f"{base}.wav")
-        else:
-            flac_to_s16(src, dst_root / f"{base}.s16")
+        to_fn(src, out_dir / (src.stem + ext))
 
-    with open(dst_root / "manifest_60h.csv", "w", newline="") as f:
-        wr = csv.writer(f); wr.writerow(["file", "seconds"])
-        ext = ".wav" if fmt == "wav" else ".s16"
-        for src, dur in chosen:
-            wr.writerow([src.stem + ext, f"{dur:.2f}"])
+    with open(out_dir / "manifest.csv", "w", newline="") as f:
+        csv.writer(f).writerows([["file","seconds"]] +
+                                [[src.stem + ext, f"{d:.2f}"] for src,d in chosen])
+    print(f"{out_dir.name}: {total/60:.1f} min  ({len(chosen)} files)")
 
-    print("Done →", dst_root)
-
-# -----------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    p = argparse.ArgumentParser()
-    p.add_argument("librispeech_root", type=Path,
-                   help="LibriSpeech root dir (contains train-clean-100/ …)")
-    p.add_argument("output_dir", type=Path,
-                   help="Destination folder for 60 h subset")
-    p.add_argument("--format", choices=["wav", "s16"], default="wav",
-                   help="Output audio format (default: wav)")
-    args = p.parse_args()
+    arg = argparse.ArgumentParser()
+    arg.add_argument("librispeech_root", type=Path)
+    arg.add_argument("output_dir",       type=Path)
+    arg.add_argument("--train-minutes", type=float, default=60.0)
+    arg.add_argument("--val-minutes",   type=float, default=4.0)
+    arg.add_argument("--test-minutes",  type=float, default=4.0)
+    arg.add_argument("--format", choices=["wav","s16"], default="wav")
+    cfg = arg.parse_args()
 
-    main(args.librispeech_root.expanduser(),
-         args.output_dir.expanduser(),
-         args.format)
+    random.seed(RNG_SEED)
+    root = cfg.librispeech_root.expanduser()
+    out  = cfg.output_dir.expanduser(); out.mkdir(parents=True, exist_ok=True)
+
+    sample_split(collect_flacs(root, "train"), cfg.train_minutes, cfg.format, out/"train")
+    sample_split(collect_flacs(root, "val"  ), cfg.val_minutes,   cfg.format, out/"val")
+    sample_split(collect_flacs(root, "test" ), cfg.test_minutes,  cfg.format, out/"test")
+
+    print("All splits done→", out)

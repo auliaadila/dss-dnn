@@ -1,4 +1,4 @@
-# Train LP-DSS + DNN
+# Train LP-DSS + DNN (end-to-end)
 import os, glob, math, argparse, re
 from typing import List, Tuple
 import warnings
@@ -10,7 +10,6 @@ import tensorflow_io as tfio
 import importlib
 from components.lpdss_dnn import *
 from components.lossfunc import *
-
 from components.dataset import FrameSequence
 
 
