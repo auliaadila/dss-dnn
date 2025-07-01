@@ -78,7 +78,7 @@ class AttackScheduler(Callback):
                 elif class_name == "LowpassFilter":
                     # Set cutoff very high to effectively disable filtering
                     high_cutoff = 8000  # Nyquist frequency for 16kHz sampling
-                    from attack import design_lowpass
+                    # from attack import design_lowpass
 
                     kernel = design_lowpass(high_cutoff)
                     layer.kernel.assign(kernel[:, None, None])
@@ -136,7 +136,7 @@ class AttackScheduler(Callback):
                     new_cutoff = max(min_cutoff, original_cutoff / multiplier)
 
                     # Recreate kernel with new cutoff
-                    from attack import design_lowpass
+                    # from attack import design_lowpass
 
                     kernel = design_lowpass(new_cutoff)
                     layer.kernel.assign(kernel[:, None, None])

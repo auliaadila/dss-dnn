@@ -28,11 +28,11 @@ def design_lowpass(cutoff=4_000, order=64):
     kernel = b * w
     kernel /= kernel.sum()
     return kernel.astype("float32")[::-1]  # flip for conv1d (causal)
-
-
+    
 class LowpassFilter(Layer):
     def __init__(self, cutoff=4_000, **kw):
         super().__init__(**kw)
+        self.cutoff = cutoff
         kernel = design_lowpass(cutoff)
         self.kernel = tf.Variable(kernel[:, None, None], trainable=False)  # (K,1,1)
 
@@ -40,6 +40,13 @@ class LowpassFilter(Layer):
         # x: (B, 2400, 1)
         y = tf.nn.conv1d(x, self.kernel, stride=1, padding="SAME")
         return y
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            "cutoff": self.cutoff,
+        })
+        return config
 
 
 # -------------------------------------------------------------------- #
