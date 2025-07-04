@@ -30,7 +30,7 @@ class ResidualEmbedding(tf.keras.layers.Layer):
         self,
         frame_size=160,
         frames_per_payload=15,
-        lpc_order=16,
+        lpc_order=12,
         alpha_init=0.05,
         trainable_alpha=False,
         **kw,
@@ -134,18 +134,3 @@ class ResidualEmbedding(tf.keras.layers.Layer):
             }
         )
         return config
-
-
-"""
-from payload_components import SpreadLayer          # unchanged
-from residual_embed import ResidualEmbedding        # new layer
-
-bits_in = tf.keras.Input((PAYLOAD_BITS,))
-pcm_in  = tf.keras.Input((FRAME*K, 1))
-
-pcm_wm  = ResidualEmbedding(frame_size=FRAME,
-                            frames_per_payload=K,
-                            lpc_order=24,
-                            alpha_init=0.05,
-                            trainable_alpha=False)([bits_in, pcm_in])
-"""

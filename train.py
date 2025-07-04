@@ -45,7 +45,7 @@ from components.residualembedding import ResidualEmbedding
 
 
 def build_model(
-    frame=160, K=15, P=64, lpc_order=16, trainable_alpha=False
+    frame=160, K=15, P=64, lpc_order=12, trainable_alpha=False
 ):  ### CHANGED
     """Return uncompiled Keras model (bits, pcm) → (bits_pred)."""
     T = frame * K
@@ -80,7 +80,7 @@ def build_model(
 # ---------------------- compile helpers ----------------------------------- #
 
 
-def compile_stage_A(model, lr=1e-4):
+def compile_stage_A(model, lr=1e-3):
     # Focus: BER
     # [from build_model] return tf.keras.Model([bits_in, pcm_in], bits_out, name='LPDSS_Payload')
     embed = model.get_layer("embedder")
@@ -102,11 +102,11 @@ def compile_stage_A(model, lr=1e-4):
 
 def compile_stage_B(
     model,
-    gamma_bits=0.7,  # weight on robustness vs audio
-    λ_l1=0.2,
-    λ_snr=0.2,
+    gamma_bits=0.6,  # weight on robustness vs audio
+    λ_l1=0.3,
+    λ_snr=0.1,
     λ_mask=0.2,
-    lr=2e-5,
+    lr=1e-4,
 ):
     """
     Make embedder’s α trainable, harden channel, and compile with
@@ -294,8 +294,8 @@ if __name__ == "__main__":
     ap.add_argument(
         "--ckpt", type=Path, help="stage-A checkpoint to start stage-B from"
     )
-    ap.add_argument("--epochsA", type=int, default=15)
-    ap.add_argument("--epochsB", type=int, default=20)
+    ap.add_argument("--epochsA", type=int, default=25)
+    ap.add_argument("--epochsB", type=int, default=15)
     ap.add_argument("--batch", type=int, default=32)
     ap.add_argument(
         "--frames", type=int, default=15, help="frames per payload window (K)"
@@ -339,7 +339,7 @@ if __name__ == "__main__":
 
     # ---------------- stage logic -----------------------------------------
     if args.stage == "A":
-        model_a = build_model(K=args.frames, P=args.bits, trainable_alpha=False)
+        model_a = build_model(K=args.frames, P=args.bits, lpc_order=args.lporder, trainable_alpha=False)
         compile_stage_A(model_a)
         fit_model(
             model_a,
@@ -359,7 +359,7 @@ if __name__ == "__main__":
         base = tf.keras.models.load_model(
             args.ckpt, custom_objects=custom, compile=False
         )
-        model_b = build_model(K=args.frames, P=args.bits, trainable_alpha=True)
+        model_b = build_model(K=args.frames, P=args.bits, lpc_order=args.lporder, trainable_alpha=True)
         model_b.set_weights(base.get_weights())
         compile_stage_B(model_b)
         fit_model(
@@ -374,7 +374,7 @@ if __name__ == "__main__":
 
     else:  # "AB"  – run both stages sequentially
         # ----- stage A -----
-        model_a = build_model(K=args.frames, P=args.bits, trainable_alpha=False)
+        model_a = build_model(K=args.frames, P=args.bits, lpc_order=args.lporder, trainable_alpha=False)
         compile_stage_A(model_a)
         fit_model(
             model_a,
@@ -390,7 +390,7 @@ if __name__ == "__main__":
         base = tf.keras.models.load_model(
             f"checkpoints/sA_{args.name}.h5", custom_objects=custom, compile=False
         )
-        model_b = build_model(K=args.frames, P=args.bits, trainable_alpha=True)
+        model_b = build_model(K=args.frames, P=args.bits, lpc_order=args.lporder, trainable_alpha=True)
         model_b.set_weights(base.get_weights())
         compile_stage_B(model_b)
         fit_model(
