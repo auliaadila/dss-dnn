@@ -2,8 +2,8 @@
 # run_train.sh – two-phase LP-DSS training
 
 python train.py \
-    --train   /home/adila/Data/research/dss-dnn/dataset/dummy/train \
-    --val     /home/adila/Data/research/dss-dnn/dataset/dummy/val \
+    --train   ../dataset/dummy/train \
+    --val     ../dataset/dummy/val \
     --stage   AB              \
     --frames  100              \
     --bits    8              \

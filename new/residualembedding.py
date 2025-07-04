@@ -1,4 +1,7 @@
-import math, os, random, glob
+import glob
+import math
+import os
+import random
 from pathlib import Path
 from typing import List, Tuple
 
@@ -7,6 +10,7 @@ import soundfile as sf
 import tensorflow as tf
 
 from spreadlayer import SpreadLayer
+
 
 class ResidualEmbedding(tf.keras.layers.Layer):
     """
@@ -21,16 +25,19 @@ class ResidualEmbedding(tf.keras.layers.Layer):
     -------
     watermarked_pcm : (B, T, 1)
     """
-    def __init__(self,
-                 frame_size=160,
-                 frames_per_payload=15,
-                 lpc_order=16,
-                 alpha_init=0.05,
-                 trainable_alpha=False,
-                 **kw):
+
+    def __init__(
+        self,
+        frame_size=160,
+        frames_per_payload=15,
+        lpc_order=16,
+        alpha_init=0.05,
+        trainable_alpha=False,
+        **kw,
+    ):
         super().__init__(**kw)
         self.frame = frame_size
-        self.K     = frames_per_payload
+        self.K = frames_per_payload
         self.order = lpc_order
         self.spread = SpreadLayer(frame_size, frames_per_payload)
         self.alpha_init = alpha_init
@@ -54,7 +61,7 @@ class ResidualEmbedding(tf.keras.layers.Layer):
     #           [tf.reshape(frames, (-1, self.frame))],
     #           tf.float32)
     #     return tf.reshape(res, (B, self.K * self.frame, 1))
-    
+
     def _residual(self, pcm):
         """
         Parameters
@@ -70,13 +77,13 @@ class ResidualEmbedding(tf.keras.layers.Layer):
         frames = tf.reshape(pcm, (-1, self.frame))  # (B*K, 160) (32 * 15, 160)
 
         # Extract constants
-        frame_size = self.frame #160
-        lpc_order = self.order #16 -> 12
+        frame_size = self.frame  # 160
+        lpc_order = self.order  # 16 -> 12
 
         def _lpc_residual(batch_2d, frame_size, lpc_order):
             """NumPy batch → NumPy batch (vectorised)."""
-            import numpy as np
             import librosa
+            import numpy as np
             from scipy.signal import lfilter
 
             out = np.empty_like(batch_2d, dtype=np.float32)
@@ -91,40 +98,45 @@ class ResidualEmbedding(tf.keras.layers.Layer):
             func=_lpc_residual,
             inp=[frames, tf.constant(frame_size), tf.constant(lpc_order)],
             Tout=tf.float32,
-            name="lpc_residual_np"
+            name="lpc_residual_np",
         )
 
         # Restore shape
-        res = tf.reshape(res, (B, self.K * self.frame, 1)) # (32, 15 * 160, 1) = (32, 2400, 1)
+        res = tf.reshape(
+            res, (B, self.K * self.frame, 1)
+        )  # (32, 15 * 160, 1) = (32, 2400, 1)
         return res
 
     # -------- build & call -------------------------------------------
     def build(self, _):
         init = tf.constant_initializer(self.alpha_init)
-        self.alpha = self.add_weight('alpha', shape=(),
-                                     initializer=init,
-                                     trainable=self.trainable_alpha) #gradient flow through alpha, causing change of value in alpha (adaptive)
+        self.alpha = self.add_weight(
+            "alpha", shape=(), initializer=init, trainable=self.trainable_alpha
+        )  # gradient flow through alpha, causing change of value in alpha (adaptive)
         super().build(_)
 
     def call(self, inputs):
-        bits, pcm = inputs                     # bits (B,P)  pcm (B,T,1)
-        residual  = self._residual(pcm)        # (B,T,1)
-        chips     = self.spread(bits, tf.shape(pcm)[1])  # (B,T,1) ±1
-        wm_term   = self.alpha * residual * chips
-        return pcm + wm_term                   # water-marked PCM (simple addition)
+        bits, pcm = inputs  # bits (B,P)  pcm (B,T,1)
+        residual = self._residual(pcm)  # (B,T,1)
+        chips = self.spread(bits, tf.shape(pcm)[1])  # (B,T,1) ±1
+        wm_term = self.alpha * residual * chips
+        return pcm + wm_term  # water-marked PCM (simple addition)
+
     def get_config(self):
         config = super().get_config()
-        config.update({
-            "frame_size": self.frame,
-            "frames_per_payload": self.K,
-            "lpc_order": self.order,
-            "alpha_init": self.alpha_init,
-            "trainable_alpha": self.trainable_alpha,
-        })
+        config.update(
+            {
+                "frame_size": self.frame,
+                "frames_per_payload": self.K,
+                "lpc_order": self.order,
+                "alpha_init": self.alpha_init,
+                "trainable_alpha": self.trainable_alpha,
+            }
+        )
         return config
-    
 
-'''
+
+"""
 from payload_components import SpreadLayer          # unchanged
 from residual_embed import ResidualEmbedding        # new layer
 
@@ -136,4 +148,4 @@ pcm_wm  = ResidualEmbedding(frame_size=FRAME,
                             lpc_order=24,
                             alpha_init=0.05,
                             trainable_alpha=False)([bits_in, pcm_in])
-'''
+"""

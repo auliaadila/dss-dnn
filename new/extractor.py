@@ -1,5 +1,6 @@
 import tensorflow as tf
 
+
 # lighter version than components/WatermarkExtractor
 class DSSExtractor(tf.keras.Model):
     """1-D CNN extractor for LP-DSS payload.
@@ -14,27 +15,32 @@ class DSSExtractor(tf.keras.Model):
         # of filters in the first Conv layer.
     """
 
-    def __init__(self, payload_bits: int, context_len: int,
-                 base_filters: int = 32, **kwargs):
+    def __init__(
+        self,
+        payload_bits: int,
+        context_len: int,
+        base_filters: int = 32,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
-        self.bits = payload_bits # P: 64
-        self.len  = context_len #2400
+        self.bits = payload_bits  # P: 64
+        self.len = context_len  # 2400
         F = base_filters
 
-        self.backbone = tf.keras.Sequential([
-            tf.keras.layers.Conv1D(F, 5, padding='same', activation='relu'),
-            tf.keras.layers.BatchNormalization(),
-            tf.keras.layers.MaxPool1D(2),                     # L/2
-
-            tf.keras.layers.Conv1D(F*2, 5, padding='same', activation='relu'),
-            tf.keras.layers.BatchNormalization(),
-            tf.keras.layers.MaxPool1D(2),                     # L/4
-
-            tf.keras.layers.Conv1D(F*4, 3, padding='same', activation='relu'),
-            tf.keras.layers.BatchNormalization(),
-            tf.keras.layers.GlobalAveragePooling1D(),         # (B, F*4)
-        ])
-        self.out_dense = tf.keras.layers.Dense(payload_bits, activation='sigmoid')
+        self.backbone = tf.keras.Sequential(
+            [
+                tf.keras.layers.Conv1D(F, 5, padding="same", activation="relu"),
+                tf.keras.layers.BatchNormalization(),
+                tf.keras.layers.MaxPool1D(2),  # L/2
+                tf.keras.layers.Conv1D(F * 2, 5, padding="same", activation="relu"),
+                tf.keras.layers.BatchNormalization(),
+                tf.keras.layers.MaxPool1D(2),  # L/4
+                tf.keras.layers.Conv1D(F * 4, 3, padding="same", activation="relu"),
+                tf.keras.layers.BatchNormalization(),
+                tf.keras.layers.GlobalAveragePooling1D(),  # (B, F*4)
+            ]
+        )
+        self.out_dense = tf.keras.layers.Dense(payload_bits, activation="sigmoid")
 
     # ------------------------------------------------------------------
     def call(self, x, training=False):
@@ -44,21 +50,22 @@ class DSSExtractor(tf.keras.Model):
 
     # ------------------------------------------------------------------
     def get_config(self):
-        return dict(payload_bits=self.bits,
-                    context_len=self.len,
-                    name=self.name)
+        return dict(payload_bits=self.bits, context_len=self.len, name=self.name)
+
 
 # ----------------------------------------------------------------------
-# Convenience builder 
+# Convenience builder
 # ----------------------------------------------------------------------
 
-def build_extractor(payload_bits: int, seg_len: int, base_filters: int =32):
-    pcm_in = tf.keras.Input((seg_len,1)) #watermarked speech
-    ext    = DSSExtractor(payload_bits, seg_len, base_filters)
-    bits   = ext(pcm_in)
-    return tf.keras.Model(pcm_in, bits, name='extractor_cnn')
 
-'''
+def build_extractor(payload_bits: int, seg_len: int, base_filters: int = 32):
+    pcm_in = tf.keras.Input((seg_len, 1))  # watermarked speech
+    ext = DSSExtractor(payload_bits, seg_len, base_filters)
+    bits = ext(pcm_in)
+    return tf.keras.Model(pcm_in, bits, name="extractor_cnn")
+
+
+"""
 from extractor import DSSExtractor, build_extractor
 extractor = build_extractor(payload_bits=64, seg_len=2400)
-'''
+"""

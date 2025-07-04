@@ -2,10 +2,11 @@
 Custom Loss functions and metrics for training/analysis
 """
 
+import numpy as np
 import tensorflow as tf
+
 # from tf_funcs import *
 from pesq import pesq as pesq_score
-import numpy as np
 
 # The following loss functions all expect the lpcnet model to output the lpc prediction
 
@@ -131,19 +132,24 @@ def l1_loss(y_true, y_pred):
 
     return tf.reduce_mean(tf.abs(y_true - y_pred))
 
+
 # not used
 def delta_pesq(clean_pcm, wm_pcm, fs=16000):
     """
     Returns a *callable metric* that ignores y_true/y_pred —
     we bind clean & watermarked signals via a closure.
     """
-    
+
     def _metric(_, __):
         # NOTE: Assumes pcm tensors are (B,T,1) float32 in [-1,1]
-        def _batch_pesq(c,w):
+        def _batch_pesq(c, w):
             c = c.numpy().squeeze()
             w = w.numpy().squeeze()
-            return np.float32(pesq_score(fs, c, c, 'wb') - pesq_score(fs, c, w, 'wb'))
-        return tf.numpy_function(_batch_pesq, [clean_pcm, wm_pcm], tf.float32) #Autograd is automatically stopped by tf.numpy_function
+            return np.float32(pesq_score(fs, c, c, "wb") - pesq_score(fs, c, w, "wb"))
+
+        return tf.numpy_function(
+            _batch_pesq, [clean_pcm, wm_pcm], tf.float32
+        )  # Autograd is automatically stopped by tf.numpy_function
+
     _metric.__name__ = "delta_pesq"
     return _metric
