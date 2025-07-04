@@ -89,6 +89,11 @@ def frequency_masking_loss(y_true, y_pred):
     y_true = tf.cast(y_true, "float32") / 32768.0
     y_pred = y_pred / 32768.0
 
+    if len(y_true.shape) == 3:
+        y_true = tf.squeeze(y_true, -1)
+    if len(y_pred.shape) == 3:
+        y_pred = tf.squeeze(y_pred, -1)
+
     # Compute STFT
     stft_true = tf.signal.stft(y_true, frame_length=512, frame_step=256)
     stft_pred = tf.signal.stft(y_pred, frame_length=512, frame_step=256)
