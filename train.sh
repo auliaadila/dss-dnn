@@ -10,4 +10,5 @@ python train.py \
     --batch   32              \
     --epochsA 3              \
     --epochsB 4 \
+    --lporder 12 \
     --name "dummy1" > dummy_040725.log
