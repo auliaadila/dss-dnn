@@ -9,7 +9,7 @@ import numpy as np
 import soundfile as sf
 import tensorflow as tf
 
-from spreadlayer import SpreadLayer
+from components.spreadlayer import SpreadLayer
 
 
 class ResidualEmbedding(tf.keras.layers.Layer):

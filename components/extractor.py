@@ -1,76 +1,71 @@
-# extractor.py
-
 import tensorflow as tf
-from tensorflow.keras import Model
-from tensorflow.keras.layers import (
-    BatchNormalization,
-    Conv1D,
-    Dense,
-    Flatten,
-    GlobalAveragePooling1D,
-    Input,
-    LeakyReLU,
-)
 
 
-class WatermarkExtractor(Model):
-    def __init__(self, time_len=2400, bits_per_frame=64, use_global_pool=False):
-        """
-        Args:
-            time_len (int or None): Input time dimension. Use None for variable length input.
-            bits_per_frame (int): Output bit length.
-            use_global_pool (bool): If True, use GlobalAveragePooling instead of Flatten.
-        """
-        super(WatermarkExtractor, self).__init__()
-        self.time_len = time_len
-        self.bits_per_frame = bits_per_frame
-        self.use_global_pool = use_global_pool
+# lighter version than components/WatermarkExtractor
+class DSSExtractor(tf.keras.Model):
+    """1-D CNN extractor for LP-DSS payload.
 
-        self.conv_layers = [
-            Conv1D(32, 5, strides=2, padding="same"),
-            BatchNormalization(),
-            LeakyReLU(alpha=0.2),
-            Conv1D(32, 5, strides=2, padding="same"),
-            BatchNormalization(),
-            LeakyReLU(alpha=0.2),
-            Conv1D(64, 5, strides=2, padding="same"),
-            BatchNormalization(),
-            LeakyReLU(alpha=0.2),
-            Conv1D(64, 5, strides=2, padding="same"),
-            BatchNormalization(),
-            LeakyReLU(alpha=0.2),
-            Conv1D(128, 5, strides=2, padding="same"),
-            BatchNormalization(),
-            LeakyReLU(alpha=0.2),
-            Conv1D(128, 5, strides=2, padding="same"),
-            BatchNormalization(),
-            LeakyReLU(alpha=0.2),
-        ]
+    Parameters
+    ----------
+    payload_bits : int
+        Length of the payload vector (e.g. 64 or 8).
+    context_len  : int
+        Number of time-samples per training window (frame_size * frames_per_payload).
+    base_filters : int, optional
+        # of filters in the first Conv layer.
+    """
 
-        self.pool_or_flatten = (
-            GlobalAveragePooling1D(name="global_pool") if use_global_pool else Flatten()
+    def __init__(
+        self,
+        payload_bits: int,
+        context_len: int,
+        base_filters: int = 32,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self.bits = payload_bits  # P: 64
+        self.len = context_len  # 2400
+        F = base_filters
+
+        self.backbone = tf.keras.Sequential(
+            [
+                tf.keras.layers.Conv1D(F, 5, padding="same", activation="relu"),
+                tf.keras.layers.BatchNormalization(),
+                tf.keras.layers.MaxPool1D(2),  # L/2
+                tf.keras.layers.Conv1D(F * 2, 5, padding="same", activation="relu"),
+                tf.keras.layers.BatchNormalization(),
+                tf.keras.layers.MaxPool1D(2),  # L/4
+                tf.keras.layers.Conv1D(F * 4, 3, padding="same", activation="relu"),
+                tf.keras.layers.BatchNormalization(),
+                tf.keras.layers.GlobalAveragePooling1D(),  # (B, F*4)
+            ]
         )
-        self.output_dense = Dense(
-            bits_per_frame, activation="sigmoid", name="bits_pred"
-        )
+        self.out_dense = tf.keras.layers.Dense(payload_bits, activation="sigmoid")
 
-    def call(self, inputs, training=False):
-        x = inputs
-        for layer in self.conv_layers:
-            x = layer(x, training=training)
-        x = self.pool_or_flatten(x)
-        return self.output_dense(x)
+    # ------------------------------------------------------------------
+    def call(self, x, training=False):
+        """x : (B, context_len, 1) float32 in [-1,1]"""
+        h = self.backbone(x, training=training)
+        return self.out_dense(h)
+
+    # ------------------------------------------------------------------
+    def get_config(self):
+        return dict(payload_bits=self.bits, context_len=self.len, name=self.name)
 
 
-if __name__ == "__main__":
-    # Example usage and summary
-    model = WatermarkExtractor(time_len=2400, bits_per_frame=64, use_global_pool=False)
+# ----------------------------------------------------------------------
+# Convenience builder
+# ----------------------------------------------------------------------
 
-    # Build with specified input shape
-    model.build(input_shape=(None, 2400, 1))
-    model.summary()
 
-    # Test dummy inference
-    dummy = tf.zeros((128, 2400, 1))
-    out = model(dummy)
-    print("output shape:", out.shape)  # (128, 64)
+def build_extractor(payload_bits: int, seg_len: int, base_filters: int = 32):
+    pcm_in = tf.keras.Input((seg_len, 1))  # watermarked speech
+    ext = DSSExtractor(payload_bits, seg_len, base_filters)
+    bits = ext(pcm_in)
+    return tf.keras.Model(pcm_in, bits, name="extractor_cnn")
+
+
+"""
+from extractor import DSSExtractor, build_extractor
+extractor = build_extractor(payload_bits=64, seg_len=2400)
+"""

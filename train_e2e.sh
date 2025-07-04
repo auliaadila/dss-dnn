@@ -1,1 +1,0 @@
-python train_e2e.py --train_dir dataset/dummy/train --val_dir dataset/dummy/val --output e2e_29062025 --logdir logs/29062025/ --cuda-devices 0

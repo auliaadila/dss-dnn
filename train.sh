@@ -1,6 +1,13 @@
+#!/usr/bin/env bash
+# run_train.sh – two-phase LP-DSS training
 
-python train.py --phase A  --train_dir dataset/dummy/train --val_dir dataset/dummy/val --epochsA 2
-
-# python train.py --phase B  --ckpt checkpoints/phaseA_best.h5 --train_dir dataset/dummy/train --val_dir dataset/dummy/val --epochsB 2
-
-# python train.py --phase AB --train_dir dataset/dummy/train --val_dir dataset/dummy/val --epochsA 2 --epochsB 2
+python train.py \
+    --train   dataset/dummy/train \
+    --val     dataset/dummy/val \
+    --stage   AB              \
+    --frames  100              \
+    --bits    8              \
+    --batch   32              \
+    --epochsA 3              \
+    --epochsB 4 \
+    --name "dummy1" > dummy_040725.log
