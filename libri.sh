@@ -1,0 +1,1 @@
+python libri.py /home/adila/Data/audio/LibriSpeech /home/adila/Data/audio/Libri1h --train-minutes 60.0 --val-minutes 4.0 --test-minutes 4.0 --format wav

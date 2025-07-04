@@ -2,13 +2,13 @@
 # run_train.sh – two-phase LP-DSS training
 
 python train.py \
-    --train   dataset/dummy/train \
-    --val     dataset/dummy/val \
+    --train   /home/adila/Data/audio/Libri1h/train \
+    --val     /home/adila/Data/audio/Libri1h/val \
     --stage   AB              \
-    --frames  100              \
-    --bits    8              \
+    --frames  15              \
+    --bits    64              \
     --batch   32              \
-    --epochsA 3              \
-    --epochsB 4 \
+    --epochsA 8              \
+    --epochsB 12 \
     --lporder 12 \
-    --name "dummy1" > dummy_040725.log
+    --name "proto1h" > proto1h_040725.log
