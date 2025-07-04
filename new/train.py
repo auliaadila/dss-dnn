@@ -140,10 +140,11 @@ def compile_stage_B(
 
     model.compile(
         optimizer=tf.keras.optimizers.Adam(lr),
-        loss={"bits_pred": bits_loss, "wm_pcm": pcm_loss},
+        loss={"bits_pred": bits_loss, 
+              "wm_pcm": pcm_loss},
         metrics={
             "bits_pred": [BitErrorRate(name="ber")],
-            "wm_pcm": None,
+            "wm_pcm": pcm_loss,
         },  #  audio head purely for loss
     )
 
@@ -204,7 +205,7 @@ def callbacks_stage_B(ckpt_path, patience_bit=5, patience_audio=3, log_prefix="s
         ),
         # Extra guard: stop if audio quality degrades for 3 epochs
         tf.keras.callbacks.EarlyStopping(
-            monitor="val_wm_pcm_loss",  # your combined audio loss
+            monitor="val_embedder_pcm_loss",  # your combined audio loss
             mode="min",
             patience=patience_audio,
             restore_best_weights=True,

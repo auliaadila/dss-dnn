@@ -1,14 +1,28 @@
 ==== NAME: dummy1
 Epoch 1/3
-1/1 [==============================] - ETA: 0s - loss: 0.7833 - extractor_loss: 0.7833 - extractor_ber: 0.4750
-Epoch 1: val_extractor_ber improved from inf to 0.50000, saving model to checkpoints/sA_dummy1.h5
-1/1 [==============================] - 4s 4s/step - loss: 0.7833 - extractor_loss: 0.7833 - extractor_ber: 0.4750 - val_loss: 0.7932 - val_extractor_loss: 0.7932 - val_extractor_ber: 0.5000
+1/1 [==============================] - ETA: 0s - loss: 0.7979 - extractor_loss: 0.7979 - extractor_ber: 0.5750
+Epoch 1: val_extractor_ber improved from inf to 0.43750, saving model to checkpoints/sA_dummy1.h5
+1/1 [==============================] - 2s 2s/step - loss: 0.7979 - extractor_loss: 0.7979 - extractor_ber: 0.5750 - val_loss: 0.7930 - val_extractor_loss: 0.7930 - val_extractor_ber: 0.4375
 Epoch 2/3
-1/1 [==============================] - ETA: 0s - loss: 0.7580 - extractor_loss: 0.7580 - extractor_ber: 0.3500
-Epoch 2: val_extractor_ber did not improve from 0.50000
-1/1 [==============================] - 0s 456ms/step - loss: 0.7580 - extractor_loss: 0.7580 - extractor_ber: 0.3500 - val_loss: 0.7933 - val_extractor_loss: 0.7933 - val_extractor_ber: 0.5625
+1/1 [==============================] - ETA: 0s - loss: 0.7890 - extractor_loss: 0.7890 - extractor_ber: 0.4500
+Epoch 2: val_extractor_ber did not improve from 0.43750
+1/1 [==============================] - 0s 109ms/step - loss: 0.7890 - extractor_loss: 0.7890 - extractor_ber: 0.4500 - val_loss: 0.7933 - val_extractor_loss: 0.7933 - val_extractor_ber: 0.6250
 Epoch 3/3
-1/1 [==============================] - ETA: 0s - loss: 0.7569 - extractor_loss: 0.7569 - extractor_ber: 0.4000
-Epoch 3: val_extractor_ber did not improve from 0.50000
-1/1 [==============================] - 0s 446ms/step - loss: 0.7569 - extractor_loss: 0.7569 - extractor_ber: 0.4000 - val_loss: 0.7929 - val_extractor_loss: 0.7929 - val_extractor_ber: 0.5625
+1/1 [==============================] - ETA: 0s - loss: 0.8039 - extractor_loss: 0.8039 - extractor_ber: 0.5500
+Epoch 3: val_extractor_ber did not improve from 0.43750
+1/1 [==============================] - 0s 135ms/step - loss: 0.8039 - extractor_loss: 0.8039 - extractor_ber: 0.5500 - val_loss: 0.7930 - val_extractor_loss: 0.7930 - val_extractor_ber: 0.5625
 Epoch 1/4
+1/1 [==============================] - ETA: 0s - loss: nan - extractor_loss: 0.5453 - embedder_loss: nan - extractor_ber: 0.4000 - embedder_pcm_loss: nan
+Epoch 1: val_extractor_ber improved from inf to 0.43750, saving model to checkpoints/sB_dummy1.h5
+1/1 [==============================] - 1s 1s/step - loss: nan - extractor_loss: 0.5453 - embedder_loss: nan - extractor_ber: 0.4000 - embedder_pcm_loss: nan - val_loss: nan - val_extractor_loss: 0.5547 - val_embedder_loss: nan - val_extractor_ber: 0.4375 - val_embedder_pcm_loss: nan
+Epoch 2/4
+1/1 [==============================] - ETA: 0s - loss: nan - extractor_loss: 0.5493 - embedder_loss: nan - extractor_ber: 0.5250 - embedder_pcm_loss: nan
+Epoch 2: val_extractor_ber did not improve from 0.43750
+1/1 [==============================] - 0s 102ms/step - loss: nan - extractor_loss: 0.5493 - embedder_loss: nan - extractor_ber: 0.5250 - embedder_pcm_loss: nan - val_loss: nan - val_extractor_loss: 0.5561 - val_embedder_loss: nan - val_extractor_ber: 0.6250 - val_embedder_pcm_loss: nan
+Epoch 3/4
+1/1 [==============================] - ETA: 0s - loss: nan - extractor_loss: 0.5486 - embedder_loss: nan - extractor_ber: 0.3750 - embedder_pcm_loss: nan
+Epoch 3: val_extractor_ber did not improve from 0.43750
+Restoring model weights from the end of the best epoch: 1.
+1/1 [==============================] - 0s 115ms/step - loss: nan - extractor_loss: 0.5486 - embedder_loss: nan - extractor_ber: 0.3750 - embedder_pcm_loss: nan - val_loss: nan - val_extractor_loss: 0.5554 - val_embedder_loss: nan - val_extractor_ber: 0.5625 - val_embedder_pcm_loss: nan
+Epoch 3: early stopping
+✅ Training finished.  Checkpoints are in ./checkpoints/

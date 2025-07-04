@@ -94,7 +94,11 @@ class FrameSequencePayload(tf.keras.utils.Sequence):
                 0, 2, (self.P,), dtype=np.uint8
             )  # generate new payload per batch (1 batch = 1 window)
             bit_batch.append(bits.astype(np.float32))
-        return [np.stack(bit_batch), np.stack(pcm_batch)], np.stack(bit_batch)
+        output = {
+            "bits_pred":np.stack(bit_batch),
+            "wm_pcm":np.stack(pcm_batch)
+        }
+        return [np.stack(bit_batch), np.stack(pcm_batch)], output
         # [bits, pcm], bits
 
     def on_epoch_end(self):

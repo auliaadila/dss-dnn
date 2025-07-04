@@ -90,8 +90,8 @@ def frequency_masking_loss(y_true, y_pred):
     y_pred = y_pred / 32768.0
 
     # Compute STFT
-    stft_true = tf.signal.stft(tf.squeeze(y_true, -1), frame_length=512, frame_step=256)
-    stft_pred = tf.signal.stft(tf.squeeze(y_pred, -1), frame_length=512, frame_step=256)
+    stft_true = tf.signal.stft(y_true, frame_length=512, frame_step=256)
+    stft_pred = tf.signal.stft(y_pred, frame_length=512, frame_step=256)
 
     # Magnitude and phase
     mag_true = tf.abs(stft_true)
@@ -123,12 +123,6 @@ def l1_loss(y_true, y_pred):
     """L1 (MAE) loss for time-domain signals"""
     y_true = tf.cast(y_true, "float32") / 32768.0
     y_pred = y_pred / 32768.0
-
-    # Handle different tensor shapes - extract only the first channel if multi-channel
-    if len(y_true.shape) == 3 and y_true.shape[-1] > 1:
-        y_true = y_true[:, :, 0:1]
-    if len(y_pred.shape) == 3 and y_pred.shape[-1] > 1:
-        y_pred = y_pred[:, :, 0:1]
 
     return tf.reduce_mean(tf.abs(y_true - y_pred))
 
