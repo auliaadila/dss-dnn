@@ -43,33 +43,3 @@ class PESQLogger(tf.keras.callbacks.Callback):
             with self.writer.as_default():
                 tf.summary.scalar(f"{self.log_prefix}/delta_pesq", delta_pesq, step=epoch)
         self.epoch += 1
-
-class DeltaPESQMetric(tf.keras.metrics.Metric):
-    def __init__(self, fs=16000, name='delta_pesq', **kwargs):
-        super().__init__(name=name, **kwargs)
-        self.fs = fs
-        self.total = self.add_weight(name='total', initializer='zeros')
-        self.count = self.add_weight(name='count', initializer='zeros')
-
-    def update_state(self, y_true, y_pred, sample_weight=None):
-        def pesq_np(ref, deg):
-            import numpy as np
-            from pesq import pesq
-            ref = np.asarray(ref).flatten()
-            deg = np.asarray(deg).flatten()
-            return np.float32(pesq(self.fs, ref, deg, 'wb'))
-
-        delta = tf.numpy_function(
-            lambda ref, deg: pesq_np(ref, deg),
-            [tf.squeeze(y_true), tf.squeeze(y_pred)],
-            tf.float32
-        )
-        self.total.assign_add(delta)
-        self.count.assign_add(1.0)
-
-    def result(self):
-        return tf.math.divide_no_nan(self.total, self.count)
-
-    def reset_states(self):
-        self.total.assign(0.0)
-        self.count.assign(0.0)

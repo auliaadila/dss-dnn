@@ -27,7 +27,7 @@ def fir_lowpass(cutoff=4000, order=64): #ok
 class LowpassFIR(tf.keras.layers.Layer):
     """Linear-phase FIR low-pass filter via 1-D convolution."""
     def __init__(self, cutoff=4000, prob=30., **kw):
-        super().__init__(trainable=False, **kw)
+        super().__init__(**kw)
         self.cutoff = cutoff; self.prob = prob
         kern = fir_lowpass(cutoff)
         self.kernel = tf.constant(kern[:, None, None])  # (K,1,1)
@@ -46,7 +46,7 @@ class LowpassFIR(tf.keras.layers.Layer):
 class AdditiveNoise(tf.keras.layers.Layer):
     """Add uniform noise ±strength with given probability."""
     def __init__(self, strength=0.005, prob=30., **kw):
-        super().__init__(trainable=False, **kw)
+        super().__init__( **kw)
         self.strength=strength; self.prob=prob
     def call(self,x):
         cond = tf.random.uniform([]) * 100 < self.prob
@@ -61,7 +61,7 @@ class AdditiveNoise(tf.keras.layers.Layer):
 class CuttingSamples(tf.keras.layers.Layer):
     """Zero out *num* random samples in each chunk (burst erasure)."""
     def __init__(self, num=200, prob=30., **kw):
-        super().__init__(trainable=False,**kw)
+        super().__init__(**kw)
         self.num=num; self.prob=prob
     def call(self,x):
         cond=tf.random.uniform([])*100<self.prob
@@ -81,7 +81,7 @@ class CuttingSamples(tf.keras.layers.Layer):
 class ButterworthIIR(tf.keras.layers.Layer):
     """Apply causal Butterworth low-pass IIR (Scipy) via tf.numpy_function."""
     def __init__(self, cutoff=4000, order=4, prob=30., **kw):
-        super().__init__(trainable=False, **kw)
+        super().__init__( **kw)
         from scipy.signal import butter
         b, a = butter(order, cutoff / (0.5 * FS), 'low')
         self.b = b.astype('float32')
@@ -121,10 +121,11 @@ class AttackPipeline(tf.keras.layers.Layer):
     • During training  -> apply attacks   (gradients stopped)
     • During inference -> pass-through
     """
-    def __init__(self, attacks=None, name="attack_pipe", **kw):
-        super().__init__(trainable=False, name=name, **kw)
+    def __init__(self, attacks=None, name="attack_pipe"):
+        super().__init__(name=name)
         self.attacks = attacks or [
-            LowpassFIR(), AdditiveNoise(), CuttingSamples(), ButterworthIIR()
+            ButterworthIIR(), AdditiveNoise(), CuttingSamples()
+            # LowpassFIR(), AdditiveNoise(), CuttingSamples(), ButterworthIIR()
         ]
 
     def call(self, x, training=None):

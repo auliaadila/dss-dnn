@@ -17,8 +17,8 @@ class DSSExtractor(tf.keras.Model):
     def __init__(self, payload_bits: int, context_len: int,
                  base_filters: int = 32, **kwargs):
         super().__init__(**kwargs)
-        self.bits = payload_bits
-        self.len  = context_len
+        self.bits = payload_bits # P: 64
+        self.len  = context_len #2400
         F = base_filters
 
         self.backbone = tf.keras.Sequential([
@@ -49,11 +49,11 @@ class DSSExtractor(tf.keras.Model):
                     name=self.name)
 
 # ----------------------------------------------------------------------
-# Convenience builder (mirrors previous build_extractor() function)
+# Convenience builder 
 # ----------------------------------------------------------------------
 
 def build_extractor(payload_bits: int, seg_len: int, base_filters: int =32):
-    pcm_in = tf.keras.Input((seg_len,1))
+    pcm_in = tf.keras.Input((seg_len,1)) #watermarked speech
     ext    = DSSExtractor(payload_bits, seg_len, base_filters)
     bits   = ext(pcm_in)
     return tf.keras.Model(pcm_in, bits, name='extractor_cnn')

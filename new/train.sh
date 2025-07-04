@@ -4,9 +4,10 @@
 python train.py \
     --train   /home/adila/Data/research/dss-dnn/dataset/dummy/train \
     --val     /home/adila/Data/research/dss-dnn/dataset/dummy/val \
-    --phase   AB              \
+    --stage   AB              \
     --frames  100              \
     --bits    8              \
     --batch   32              \
-    --epochsA 2              \
-    --epochsB 3 > dummy_030725.log
+    --epochsA 3              \
+    --epochsB 4 \
+    --name "dummy1" > dummy_040725.log

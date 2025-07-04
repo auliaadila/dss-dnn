@@ -67,11 +67,11 @@ class ResidualEmbedding(tf.keras.layers.Layer):
         """
         pcm = tf.squeeze(pcm, -1)  # (B, T)
         B = tf.shape(pcm)[0]
-        frames = tf.reshape(pcm, (-1, self.frame))  # (B*K, 160)
+        frames = tf.reshape(pcm, (-1, self.frame))  # (B*K, 160) (32 * 15, 160)
 
         # Extract constants
-        frame_size = self.frame
-        lpc_order = self.order
+        frame_size = self.frame #160
+        lpc_order = self.order #16 -> 12
 
         def _lpc_residual(batch_2d, frame_size, lpc_order):
             """NumPy batch → NumPy batch (vectorised)."""
@@ -95,7 +95,7 @@ class ResidualEmbedding(tf.keras.layers.Layer):
         )
 
         # Restore shape
-        res = tf.reshape(res, (B, self.K * self.frame, 1))
+        res = tf.reshape(res, (B, self.K * self.frame, 1)) # (32, 15 * 160, 1) = (32, 2400, 1)
         return res
 
     # -------- build & call -------------------------------------------
@@ -103,7 +103,7 @@ class ResidualEmbedding(tf.keras.layers.Layer):
         init = tf.constant_initializer(self.alpha_init)
         self.alpha = self.add_weight('alpha', shape=(),
                                      initializer=init,
-                                     trainable=self.trainable_alpha)
+                                     trainable=self.trainable_alpha) #gradient flow through alpha, causing change of value in alpha (adaptive)
         super().build(_)
 
     def call(self, inputs):
@@ -111,7 +111,7 @@ class ResidualEmbedding(tf.keras.layers.Layer):
         residual  = self._residual(pcm)        # (B,T,1)
         chips     = self.spread(bits, tf.shape(pcm)[1])  # (B,T,1) ±1
         wm_term   = self.alpha * residual * chips
-        return pcm + wm_term                   # water-marked PCM (addition)
+        return pcm + wm_term                   # water-marked PCM (simple addition)
     def get_config(self):
         config = super().get_config()
         config.update({
