@@ -115,7 +115,7 @@ def compile_stage_B(
 
     # 1) unfreeze alpha
     embed = model.get_layer("embedder")
-    embed.alpha.trainable = True
+    embed.trainable = True
 
     # 2) harden attacks
     chan = model.get_layer("attacks")
