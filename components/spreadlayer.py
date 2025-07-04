@@ -26,10 +26,16 @@ class SpreadLayer(tf.keras.layers.Layer):
         P = tf.shape(bits)[1]  # payload
 
         spread_factor = total_len // P  # multiplier, how many repeats
+        expected_len = spread_factor * P
+
+        tf.print("→ Debug SpreadLayer:", "B =", B, "P =", P, "total_len =", total_len, "expected_len =", expected_len)
+        # → Debug SpreadLayer: B = 32 P = 64 total_len = 2400 expected_len = 2368
+
         repeated = tf.repeat(bits, repeats=spread_factor, axis=1)  # (B, total_len)
 
         chips = 2 * tf.cast(repeated, tf.float32) - 1  # map {0,1} → {-1,+1}
-        chips = tf.reshape(chips, (B, total_len, 1))  # (32, 2400, 1)
+        # chips = tf.reshape(chips, (B, total_len, 1))  # (32, 2400, 1)
+        chips = tf.reshape(chips, (B, expected_len, 1))  # (32, 2400, 1)
         return chips
 
     # def call(self,bits,pcm_len):
