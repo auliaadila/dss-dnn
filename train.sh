@@ -2,8 +2,8 @@
 # run_train.sh – two-phase LP-DSS training
 
 python train.py \
-    --train   /home/adila/Data/audio/Libri1h/train \
-    --val     /home/adila/Data/audio/Libri1h/val \
+    --train   ./dataset/dummy/train/ \
+    --val     ./dataset/dummy/train \
     --stage   AB              \
     --frames  15              \
     --bits    64              \
