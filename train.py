@@ -84,8 +84,8 @@ def compile_stage_A(model, lr=1e-3):
     # Focus: BER
     # [from build_model] return tf.keras.Model([bits_in, pcm_in], bits_out, name='LPDSS_Payload')
     embed = model.get_layer("embedder")
-    embed.alpha.assign(0.05)  # Only assign value
-    # Do NOT set embed.alpha.trainable = False
+    embed.set_alpha_value(0.05)  # Set alpha value using the proper method
+    # Alpha trainability is set during model construction, not here
 
     chan = model.get_layer("attacks")
     for lay in chan.attacks:
@@ -115,6 +115,7 @@ def compile_stage_B(
 
     # 1) unfreeze alpha
     embed = model.get_layer("embedder")
+    embed.set_alpha_trainable(True)
     embed.trainable = True
 
     # 2) harden attacks

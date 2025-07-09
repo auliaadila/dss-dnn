@@ -40,6 +40,32 @@ class SpreadLayer(tf.keras.layers.Layer):
         chips = tf.reshape(chips, (B, total_len, 1))  # (B, total_len, 1)
         return chips
 
+    def get_config(self):
+        """Return configuration for model serialization."""
+        config = super().get_config()
+        config.update({
+            'frame_size': self.F,
+            'frames_per_payload': self.K,
+        })
+        return config
+    
+    @classmethod
+    def from_config(cls, config):
+        """Create layer from configuration, with defaults for missing parameters."""
+        frame_size = config.get('frame_size', 160)
+        frames_per_payload = config.get('frames_per_payload', 15)
+        
+        # Remove these from config to avoid passing them twice
+        config = config.copy()
+        config.pop('frame_size', None)
+        config.pop('frames_per_payload', None)
+        
+        return cls(
+            frame_size=frame_size,
+            frames_per_payload=frames_per_payload,
+            **config
+        )
+
     # def call(self,bits,pcm_len):
     #     # bits: (B, payload_bits)
     #     B = tf.shape(bits)[0]

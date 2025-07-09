@@ -23,4 +23,4 @@ python train.py \
     --epochsA 8              \
     --epochsB 12 \
     --lporder 12 \
-    --name "proto1h" > proto1h_040725.log
+    --name "proto1h" | tee log.txt

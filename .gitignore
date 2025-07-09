@@ -175,3 +175,11 @@ pyrightconfig.json
 
 logs
 checkpoint*
+cache
+repo*
+*.diff
+log*
+.repo*
+CL*
+/prep*
+/*.wav

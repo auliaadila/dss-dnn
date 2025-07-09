@@ -191,7 +191,10 @@ class AttackPipeline(tf.keras.layers.Layer):
 
     @classmethod
     def from_config(cls, config):
-        attacks = [tf.keras.utils.deserialize_keras_object(a) for a in config.pop('attacks', [])]
+        attacks = [
+            tf.keras.utils.deserialize_keras_object(a)
+            for a in config.pop("attacks", [])
+        ]
         return cls(attacks=attacks, **config)
 
 
