@@ -59,3 +59,15 @@ class AttackPipelineFixed(tf.keras.layers.Layer):
             # Full strength
             self.noise.snr_db = 20.0
             self.cut.max_cut_ratio = 0.1
+
+    def get_config(self):
+        # grab the base config (a dict!)
+        config = super().get_config()
+        # add only JSON‐serializable constructor args
+        config.update({
+            "fir_cutoff":    self.fir.cutoff,
+            "iir_cutoff":    self.iir.cutoff,
+            "snr_db":        self.noise.snr_db,
+            "max_cut_ratio": self.cut.max_cut_ratio,
+        })
+        return config
