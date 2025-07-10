@@ -19,6 +19,7 @@ from components.attacks_gpu import (
 )
 from components.extractor_fixed import DSSExtractorFixed
 from components.residualembedding_gpu import ResidualEmbeddingGPU
+from embedder import hex_to_bits
 
 FS = 16_000  # sample-rate expected by the model
 P = 64  # payload bits
@@ -37,6 +38,7 @@ def main():
     ap = argparse.ArgumentParser(description="Classic LP-DSS inference")
     ap.add_argument("--in", required=True, dest="inp", help="water-marked wav")
     ap.add_argument("--model", required=True, help="trained .h5 model")
+    ap.add_argument("--wm", help="16-digit hex ground truth watermark")
     args = ap.parse_args()
 
     # -------------------------------------------------------- #
@@ -86,13 +88,20 @@ def main():
         ]  # (64,)
         votes.append(bits_prob)
 
-    votes = np.stack(votes)  # (Nwin, 64)
-    prob = votes.mean(axis=0)  # majority / mean
-    bits = (prob > 0.5).astype(int)
-    hex_out = bits_to_hex(bits)
+    votes = np.stack(votes)  # (Nwin, 64) #(13, 64)
+    prob = votes.mean(axis=0)  # majority / mean #(64,)
+    bits = (prob > 0.5).astype(int) #(64,)
+    hex_out = bits_to_hex(bits) #16
 
     print("\nRecovered watermark hex :", hex_out)
     print("Bit probabilities         :", np.round(prob, 3))
+    
+    if args.wm:
+        bits_in = hex_to_bits(args.wm).astype(int) #(64, )
+        errors = bits_in != bits
+        ber = np.mean(errors)
+        print(f"Bit Error Rate (BER)     : {ber:.4f} ({ber*100:.1f}%)")
+        print("Ground truth watermark hex: ", args.wm)
 
 
 if __name__ == "__main__":
