@@ -139,8 +139,8 @@ class ResidualEmbeddingGPU(tf.keras.layers.Layer):
         # Use a fixed seed for reproducibility
         seed = [42, 123]  # Fixed seed for consistent PN sequences
 
-        # Calculate chips per bit (spreading factor)
-        chips_per_bit = total // self.P
+        # Calculate chips per bit (spreading factor) # ceil(2400 / 64)
+        chips_per_bit = total // self.P #floor
         if total % self.P != 0:
             chips_per_bit += 1
 
@@ -155,7 +155,7 @@ class ResidualEmbeddingGPU(tf.keras.layers.Layer):
             )
             # Convert to bipolar ±1
             pn_seq = tf.where(pn_seq > 0.5, 1.0, -1.0)
-            pn_sequences.append(pn_seq)
+            pn_sequences.append(pn_seq) #(38,1)?
 
         # Stack all PN sequences
         pn_matrix = tf.stack(pn_sequences, axis=0)  # (P, chips_per_bit)
@@ -166,7 +166,7 @@ class ResidualEmbeddingGPU(tf.keras.layers.Layer):
         # Expand bits_bipolar to match PN matrix
         bits_expanded = tf.expand_dims(bits_bipolar, -1)  # (B, P, 1)
 
-        # Multiply each bit with its PN sequence
+        # Multiply each bit with its PN sequence (spread signal)
         spread_matrix = bits_expanded * pn_matrix[None, :, :]  # (B, P, chips_per_bit)
 
         # Flatten to get chip sequence
