@@ -132,6 +132,13 @@ class ResidualEmbeddingGPU(tf.keras.layers.Layer):
         res = tf.reshape(res, [B, self.T, 1])
         return res
     
+    def _pn(self, pcm):
+        B = tf.shape(pcm)[0]
+        T = self.T
+        rnd = tf.random.stateless_uniform(
+                shape=(B, T, 1), seed=[123, 456], dtype=tf.float32)
+        return tf.where(rnd > 0.5, 1.0, -1.0)          # (B,T,1)
+    
     # ----------  build chip train from residual + bits  -------------------
     def _chips_from_residual(self, bits, resid):
         """
@@ -156,6 +163,36 @@ class ResidualEmbeddingGPU(tf.keras.layers.Layer):
     # ====================================================================== #
     # Keras call
     # ====================================================================== #
+    def call(self, inputs, training=False):
+        bits, pcm = inputs
+        bits = tf.cast(bits, tf.float32)
+
+        # 1) random ±1 PN
+        pn = self._pn(pcm)
+
+        # 2) window-wise α using host loudness
+        host_mag   = tf.reduce_mean(tf.abs(pcm), axis=1)          # (B,1)
+        alpha_norm = self.alpha_net(host_mag,
+                                    training=self.trainable_alpha)
+        alpha      = self.a_min + (self.a_max - self.a_min) * alpha_norm
+        alpha      = tf.expand_dims(alpha, 1)                     # (B,1,1)
+
+        # 3) spread bits with PN
+        chips_per_bit = tf.cast(tf.math.ceil(self.T / self.P), tf.int32)
+        bits_bip      = bits * 2. - 1.                            # bipolar
+        bits_rep      = tf.repeat(bits_bip,
+                                repeats=chips_per_bit,
+                                axis=1)[:, :self.T]             # (B,T)
+        chips         = pn[:, :, 0] * bits_rep                    # (B,T)
+        chips         = tf.expand_dims(chips, -1)                 # (B,T,1)
+
+        # 4) embed
+        watermarked = tf.clip_by_value(pcm + alpha * chips, -1., 1.)
+        return watermarked
+    
+    '''
+    ## Residual
+    
     def call(self, inputs, training=False):
         """
         inputs = [bits, pcm]
@@ -190,6 +227,7 @@ class ResidualEmbeddingGPU(tf.keras.layers.Layer):
         watermarked = pcm + alpha * chips
         watermarked = tf.clip_by_value(watermarked, -1.0, 1.0)
         return watermarked
+    '''
     
     def get_config(self):
         """Return configuration for model serialization."""
