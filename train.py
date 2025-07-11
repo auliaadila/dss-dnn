@@ -430,14 +430,20 @@ def main():
 
         # Custom callback to print alpha during Stage B
         class AlphaPrintCallback(tf.keras.callbacks.Callback):
-            def __init__(self, embedding_layer):
+            def __init__(self, emb):
                 super().__init__()
-                self.embedding_layer = embedding_layer
+                self.emb = emb
 
             def on_epoch_end(self, epoch, logs=None):
-                if self.embedding_layer:
-                    alpha_val = self.embedding_layer.alpha.numpy()
-                    print(f"Epoch {epoch + 1}: Alpha = {alpha_val:.6f}")
+                if self.emb is None:
+                    return                     # should never happen
+                if self.emb.alpha_settings == "constant":
+                    val = float(self.emb.alpha_const.numpy())
+                    print(f"[epoch {epoch+1:03d}] α = {val:.5f}  (global scalar)")
+                else:
+                    # α is adaptive – show current min/max range
+                    print(f"[epoch {epoch+1:03d}] α adaptive range "
+                        f"[{self.emb.a_min:.4f} … {self.emb.a_max:.4f}]")
 
         alpha_callback = AlphaPrintCallback(embedding_layer)
 
