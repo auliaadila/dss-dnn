@@ -401,12 +401,13 @@ def main():
             except Exception as e:
                 print(f"❌ Error loading Stage A checkpoint: {e}")
                 raise
-
+        
         # Find the embedding layer
         embedding_layer = None
         for layer in model.layers:
             if isinstance(layer, Embedder):  
                 embedding_layer = layer
+                
                 break
 
         # Find attack pipeline to re-enable normal attacks
@@ -420,7 +421,11 @@ def main():
             if embedding_layer.alpha_settings == "constant":
                 embedding_layer.set_alpha_trainable(True)        # learn scalar α
             else:                                               # adaptive
+                embedding_layer.a_min, embedding_layer.a_max = 1e-3, 2e-1
                 embedding_layer.alpha_net.trainable = True       # learn α-net
+                
+            print("trainable?", embedding_layer.alpha_net.trainable,
+                        "a_min/max:", embedding_layer.a_min, embedding_layer.a_max)
 
         if attack_layer:
             # Normal mode: full attack strength
@@ -428,22 +433,31 @@ def main():
 
         ckpt_path_B = ckpt_dir / f"{args.name}_stageB.h5"
 
-        # Custom callback to print alpha during Stage B
-        class AlphaPrintCallback(tf.keras.callbacks.Callback):
-            def __init__(self, emb):
-                super().__init__()
-                self.emb = emb
+        # # Custom callback to print alpha during Stage B
+        # class AlphaPrintCallback(tf.keras.callbacks.Callback):
+        #     def __init__(self, emb):
+        #         super().__init__()
+        #         self.emb = emb
+        #     def on_batch_end(self, batch, logs=None):
+        #         a = self.emb.current_alpha      # (B,1,1) tensor you expose from call()
+        #         if batch % 100 == 0:            # print every 100 batches
+        #             mn = tf.reduce_min(a).numpy()
+        #             mx = tf.reduce_max(a).numpy()
+        #             sd = tf.math.reduce_std(a).numpy()
+        #             print(f"[batch {batch}] α min={mn:.4f}  max={mx:.4f}  std={sd:.4f}")   
 
-            def on_epoch_end(self, epoch, logs=None):
-                if self.emb is None:
-                    return                     # should never happen
+        class AlphaPrintCallback(tf.keras.callbacks.Callback):
+            def __init__(self, emb): super().__init__(); self.emb = emb
+
+            def on_epoch_end(self, batch, epoch, logs=None):
+                if self.emb is None: return
                 if self.emb.alpha_settings == "constant":
-                    val = float(self.emb.alpha_const.numpy())
-                    print(f"[epoch {epoch+1:03d}] α = {val:.5f}  (global scalar)")
+                    print(f"[ep {epoch+1}] α = {self.emb.alpha_const.numpy():.4f}")
                 else:
-                    # α is adaptive – show current min/max range
-                    print(f"[epoch {epoch+1:03d}] α adaptive range "
-                        f"[{self.emb.a_min:.4f} … {self.emb.a_max:.4f}]")
+                    α_hat = self.emb.alpha_net(tf.ones((1,1))).numpy()[0,0]
+                    α     = self.emb.a_min + (self.emb.a_max-self.emb.a_min)*α_hat
+                    print(f"[ep {epoch+1}] α̂ = {α:.4f} "
+                        f"(norm={α_hat:.3f}, range {self.emb.a_min:.3f}…{self.emb.a_max:.3f})")
 
         alpha_callback = AlphaPrintCallback(embedding_layer)
 
