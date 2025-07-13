@@ -87,8 +87,10 @@ class FrameSequencePayloadCached(tf.keras.utils.Sequence):
             bits = np.random.randint(0, 2, (self.P,), dtype=np.uint8).astype(np.float32)
             bit_batch.append(bits)
 
-        # Return inputs and target bits for training
-        return [np.stack(bit_batch), np.stack(pcm_batch)], np.stack(bit_batch)
+        output = {"bits_pred": np.stack(bit_batch), 
+                "wm_pcm": np.stack(pcm_batch)}
+        return [np.stack(bit_batch), np.stack(pcm_batch)], output
+    
 
     def on_epoch_end(self):
         if self.shuffle:

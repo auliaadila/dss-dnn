@@ -143,7 +143,7 @@ class Embedder(tf.keras.layers.Layer):
         m   = tf.reduce_mean(r, axis=1, keepdims=True)
         std = tf.math.reduce_std(r - m, axis=1, keepdims=True) + 1e-6
         w   = (r - m) / std
-        w   = w * self.target_rms
+        w   = w * self.target_rms #keep the RMS at 1 (don’t multiply by target_rms).
         c   = tf.sign(w)
         return tf.where(c == 0., 1., c)
 

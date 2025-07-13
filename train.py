@@ -21,7 +21,7 @@ from components.attacks_gpu import (
 )
 from components.dataloader_cached import FrameSequencePayload
 from components.extractor_fixed import DSSExtractorFixed as DSSExtractor
-from components.lossfunc_fixed import bit_consistency_loss
+from components.lossfunc_fixed import bit_consistency_loss, frequency_masking_loss, l1_loss, snr_loss
 from components.metrics import BitErrorRate
 from components.embedding import Embedder
 
@@ -67,7 +67,9 @@ def build_model_gpu(frame=160, K=15, P=64,
 
     # Create model
     model = tf.keras.Model(
-        inputs=[bits_input, pcm_input], outputs=bits_pred, name="LPDSS_GPU"
+        inputs=[bits_input, pcm_input], 
+        outputs={"bits_pred": bits_pred, "wm_pcm": watermarked}, 
+        name="LPDSS_GPU"
     )
 
     return model
@@ -120,21 +122,84 @@ def train_stage_gpu(
     """GPU-optimized training stage."""
 
     # Configure optimizer with gradient clipping
-    # Use lower learning rate for Stage B to prevent instability
     lr = 1e-4 if stage == "B" else 5e-4
     optimizer = tf.keras.optimizers.Adam(
         learning_rate=lr,
-        clipnorm=1.0,  # Clip gradients to prevent explosion
+        clipnorm=1.0,
     )
-    # optimizer = tf.keras.mixed_precision.LossScaleOptimizer(optimizer)  # Disabled for now
 
-    # Configure loss and metrics
-    # Use bit-wise BCE + temperature-sharpening loss for better performance
-    loss_fn = lambda y_true, y_pred: bit_consistency_loss(y_true, y_pred, lam=0.2)
-    metrics = [
-        tf.keras.metrics.BinaryAccuracy(name="accuracy"),
-        BitErrorRate(name="ber"),
-    ]
+    # Stage A setup
+    if stage == "A":
+        lambda_bits = 0.2
+
+        def dummy_loss(y_true, y_pred):
+            return tf.constant(0.0)
+
+        def dummy_metric(y_true, y_pred):
+            return tf.constant(0.0)
+
+        def bits_loss(y_true, y_pred):
+            return bit_consistency_loss(y_true, y_pred) * lambda_bits
+
+        loss_fn = {
+            "bit_pred": bits_loss,
+            "wm_pcm": None
+        }
+        metrics = {
+            "bit_pred": [
+                tf.keras.metrics.BinaryAccuracy(name="accuracy"),
+                BitErrorRate(name="ber"),
+            ],
+            "wm_pcm": None
+        }
+
+    # Stage B setup
+    elif stage == "B":
+        lambda_bits = 0.6
+        lambda_pcm = {
+            "λ_l1": 0.3,
+            "λ_snr": 0.1,
+            "λ_mask": 0.2
+        }
+
+        def bits_loss(y_true, y_pred):
+            return bit_consistency_loss(y_true, y_pred) * lambda_bits
+
+        def pcm_loss(y_true, y_pred):
+            l1 = lambda_pcm["λ_l1"] * l1_loss(y_true, y_pred)
+            snr = lambda_pcm["λ_snr"] * snr_loss(y_true, y_pred)
+            fmsk = lambda_pcm["λ_mask"] * frequency_masking_loss(y_true, y_pred)
+            return (1.0 - lambda_bits) * (l1 + snr + fmsk)
+        
+        class PCMLossMetric(tf.keras.metrics.Metric):
+            def __init__(self, name='pcm_loss', **kwargs):
+                super().__init__(name=name, **kwargs)
+                self.total = self.add_weight(name='total', initializer='zeros')
+                self.count = self.add_weight(name='count', initializer='zeros')
+            
+            def update_state(self, y_true, y_pred, sample_weight=None):
+                values = pcm_loss(y_true, y_pred)
+                self.total.assign_add(tf.reduce_sum(values))
+                self.count.assign_add(tf.cast(tf.size(values), tf.float32))
+            
+            def result(self):
+                return self.total / self.count
+            
+            def reset_state(self):
+                self.total.assign(0.)
+                self.count.assign(0.)
+
+        loss_fn = {
+            "bit_pred": bits_loss,
+            "wm_pcm": pcm_loss
+        }
+        metrics = {
+            "bit_pred": [BitErrorRate(name="ber")],
+            "wm_pcm": [PCMLossMetric()],
+        }
+
+    else:
+        raise ValueError(f"Invalid training stage: {stage}")
 
     # Compile model
     model.compile(optimizer=optimizer, loss=loss_fn, metrics=metrics)
@@ -155,17 +220,19 @@ def train_stage_gpu(
         ),
     ]
 
-    # Add extra callbacks if provided
     if extra_callbacks:
         callbacks.extend(extra_callbacks)
 
-    # Train
     print(f"Starting Stage {stage} training...")
     print(f"Batch size: {batch_size}")
     print(f"Epochs: {epochs}")
 
     history = model.fit(
-        train_ds, validation_data=val_ds, epochs=epochs, callbacks=callbacks, verbose=1
+        train_ds,
+        validation_data=val_ds,
+        epochs=epochs,
+        callbacks=callbacks,
+        verbose=1,
     )
 
     return history

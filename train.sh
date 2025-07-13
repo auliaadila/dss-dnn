@@ -27,16 +27,20 @@ COMMON_ARGS="
   --frames    15
   --bits      64
   --batch     32
-  --epochsA   8
-  --epochsB   12
+  --epochsA   15
+  --epochsB   30
   --lporder   12
   --stage     AB
 "
 
 # Enumerate all combinations ----------------------------------------------
-SPREAD=(dss lpdss)
-ALPHA=(constant adaptive)
-RESID=(sign whiten)           # only used for LP-DSS
+# SPREAD=(dss lpdss)
+# ALPHA=(constant adaptive)
+# RESID=(sign whiten)           # only used for LP-DSS
+
+SPREAD=(dss)
+ALPHA=(adaptive)
+RESID=(sign)           # only used for LP-DSS
 
 for s in "${SPREAD[@]}"; do
   for a in "${ALPHA[@]}"; do
@@ -49,7 +53,7 @@ for s in "${SPREAD[@]}"; do
     fi
 
     for r in "${resid_list[@]}"; do
-      MODEL_NAME="${s}_${a}_${r}"
+      MODEL_NAME="${s}_${a}_${r}_test"
 
       echo -e "\n============================================================"
       echo   "Training model: ${MODEL_NAME}"
@@ -63,7 +67,7 @@ for s in "${SPREAD[@]}"; do
           --alphaset     "${a}" \
           --residmethod  "${r}" \
           --name         "${MODEL_NAME}" \
-          2>&1 | tee "logs/${MODEL_NAME}.log"
+          2>&1 | tee "logs/${MODEL_NAME}_test.log"
     done
   done
 done
