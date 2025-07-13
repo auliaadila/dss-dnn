@@ -142,11 +142,11 @@ def train_stage_gpu(
             return bit_consistency_loss(y_true, y_pred) * lambda_bits
 
         loss_fn = {
-            "bit_pred": bits_loss,
+            "bits_pred": bits_loss,
             "wm_pcm": None
         }
         metrics = {
-            "bit_pred": [
+            "bits_pred": [
                 tf.keras.metrics.BinaryAccuracy(name="accuracy"),
                 BitErrorRate(name="ber"),
             ],
@@ -190,11 +190,11 @@ def train_stage_gpu(
                 self.count.assign(0.)
 
         loss_fn = {
-            "bit_pred": bits_loss,
+            "bits_pred": bits_loss,
             "wm_pcm": pcm_loss
         }
         metrics = {
-            "bit_pred": [BitErrorRate(name="ber")],
+            "bits_pred": [BitErrorRate(name="ber")],
             "wm_pcm": [PCMLossMetric()],
         }
 
