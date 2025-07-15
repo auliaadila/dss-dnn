@@ -167,20 +167,75 @@ class Embedder(tf.keras.layers.Layer):
         return tf.expand_dims(spread, -1)                  # (B,T,1)
 
     # ---------- residual spreading helper -----------------------------------
+    # def _chips_from_resid(self, bits, carrier):
+    #     chips_per_bit = (self.T + self.P - 1) // self.P
+    #     bits_bip = bits * 2. - 1.
+    #     bits_rep = tf.repeat(bits_bip, repeats=chips_per_bit, axis=1)[:, :self.T]
+    #     return tf.expand_dims(carrier[:, :, 0] * bits_rep, -1) #break orthogonality
+
+    def _carrier_blocks(self, resid):
+        """
+        Slice residual into P equal blocks, then (optionally) whiten each block.
+        Returns (B, P, L) real-valued carrier.
+        """
+        # global RMS normalisation keeps α_k in a narrow dB range
+        rms   = tf.math.reduce_std(resid, axis=[1,2], keepdims=True) + 1e-6
+        resid = resid / rms
+
+        # slice
+        L   = (self.T + self.P - 1) // self.P
+        pad = L * self.P - self.T
+        blocks = tf.reshape(tf.pad(resid, [[0,0],[0,pad],[0,0]]),
+                            [-1, self.P, L])                      # (B,P,L)
+
+        if self.resid_method == "whiten":       # default for LP-DSS
+            mu  = tf.reduce_mean(blocks, 2, keepdims=True)
+            std = tf.math.reduce_std(blocks - mu, 2, keepdims=True) + 1e-6
+            blocks = (blocks - mu) / std * self.target_rms          # real values
+
+        # no tf.sign → keep analogue samples
+        return blocks                                               # (B,P,L)
+    
     def _chips_from_resid(self, bits, carrier):
-        chips_per_bit = (self.T + self.P - 1) // self.P
-        bits_bip = bits * 2. - 1.
-        bits_rep = tf.repeat(bits_bip, repeats=chips_per_bit, axis=1)[:, :self.T]
-        return tf.expand_dims(carrier[:, :, 0] * bits_rep, -1)
+        # carrier: (B,P,L)  – produced by _carrier_blocks
+        bits_b = tf.expand_dims(bits * 2. - 1., -1)      # (B,P,1)
+        chips  = carrier * bits_b                        # (B,P,L)
+        chips  = tf.reshape(chips, [tf.shape(bits)[0], -1, 1])[:, :self.T, :]
+        return chips 
+    
+    '''
+    def _chips_from_resid(self, bits, resid):
+        # 1) slice residual into P equal-length blocks
+        L   = (self.T + self.P - 1) // self.P          # ceil
+        pad = L * self.P - self.T
+        blocks = tf.reshape(tf.pad(resid, [[0,0],[0,pad],[0,0]]),
+                            [-1, self.P, L])           # (B,P,L)
+
+        # 2) optional per-block whitening / sign
+        if self.resid_method == "sign":
+            mu  = tf.reduce_mean(blocks, 2, keepdims=True)
+            std = tf.math.reduce_std(blocks - mu, 2, keepdims=True) + 1e-6
+            blocks = tf.sign((blocks - mu) / std)
+            blocks = tf.where(blocks == 0., 1., blocks)
+
+        # 3) spread: each bit multiplies its *own* residual block
+        bits_b = tf.expand_dims(bits * 2. - 1., -1)    # (B,P,1)
+        chips  = blocks * bits_b                       # (B,P,L)
+
+        # 4) back to (B,T,1)
+        chips  = tf.reshape(chips, [tf.shape(bits)[0], -1, 1])[:, :self.T, :]
+        return chips
+    '''
 
     # ---------- forward -----------------------------------------------------
+    '''
     def call(self, inputs):
         bits, pcm = inputs
         bits = tf.cast(bits, tf.float32)
 
         # build chips
         if self.spread_method == "lpdss":
-            resid   = self._gpu_residual_simple(pcm)
+            resid   = self._residual(pcm)
             if self.resid_method=="sign":
                 carrier = self._resid_sign(resid)
             else:
@@ -206,6 +261,37 @@ class Embedder(tf.keras.layers.Layer):
         
         # embed
         watermarked = tf.clip_by_value(pcm + alpha * chips, -1., 1.)
+        return watermarked
+    '''
+    
+    def call(self, inputs, training=False):
+        """
+        bits : (B, P)  {0,1}
+        pcm  : (B, T, 1)  float32  host signal
+        """
+        bits = tf.cast(inputs[0], tf.float32)     # ensure float for maths
+        pcm  = inputs[1]
+
+        # ─── build chips (orthogonal LP-DSS or classical DSSS) ──────────
+        if self.spread_method == "lpdss":
+            resid   = self._residual(pcm)                     # (B,T,1)
+            carrier = self._carrier_blocks(resid)             # (B,P,L)  real-valued
+            chips   = self._chips_from_resid(bits, carrier)   # (B,T,1)
+        else:                                                 # PN DSSS
+            chips   = self._chips_from_pn(bits)               # (B,T,1)
+
+        # ─── choose α (constant or adaptive) ────────────────────────────
+        if self.alpha_settings == "adaptive":
+            # use host-frame magnitude as feature; keep α_net frozen if not trainable
+            host_mag = tf.reduce_mean(tf.abs(chips), axis=1, keepdims=True)  # (B,1)
+            a_norm   = self.alpha_net(host_mag, training=self.alpha_net.trainable)
+            alpha    = self.a_min + (self.a_max - self.a_min) * a_norm       # (B,1)
+            alpha    = tf.expand_dims(alpha, 1)                              # (B,1,1)
+        else:                                           # constant scalar α
+            alpha = tf.reshape(self.alpha_const, [1, 1, 1])                  # (1,1,1)
+
+        # ─── embed & clip  ────────────────────────────────────────────────
+        watermarked = tf.clip_by_value(pcm + alpha * chips, -1.0, 1.0)
         return watermarked
 
     # ---------- (de)serialisation -------------------------------------------
