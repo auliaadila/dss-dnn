@@ -32,15 +32,16 @@ COMMON_ARGS="
   --lporder   12
   --stage     AB
 "
+# --ckpt checkpoints/dss_adaptive_sign_test_stageA.h5
 
 # Enumerate all combinations ----------------------------------------------
 # SPREAD=(dss lpdss)
 # ALPHA=(constant adaptive)
 # RESID=(sign whiten)           # only used for LP-DSS
 
-SPREAD=(dss)
+SPREAD=(lpdss)
 ALPHA=(adaptive)
-RESID=(sign)           # only used for LP-DSS
+RESID=(whiten)           # only used for LP-DSS
 
 for s in "${SPREAD[@]}"; do
   for a in "${ALPHA[@]}"; do
@@ -53,7 +54,7 @@ for s in "${SPREAD[@]}"; do
     fi
 
     for r in "${resid_list[@]}"; do
-      MODEL_NAME="${s}_${a}_${r}_test"
+      MODEL_NAME="${s}_${a}_${r}_lp"
 
       echo -e "\n============================================================"
       echo   "Training model: ${MODEL_NAME}"
@@ -67,7 +68,7 @@ for s in "${SPREAD[@]}"; do
           --alphaset     "${a}" \
           --residmethod  "${r}" \
           --name         "${MODEL_NAME}" \
-          2>&1 | tee "logs/${MODEL_NAME}_test.log"
+          2>&1 | tee "logs/${MODEL_NAME}.log"
     done
   done
 done
