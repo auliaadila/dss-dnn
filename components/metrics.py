@@ -1,9 +1,36 @@
 import numpy as np
 import tensorflow as tf
-from pesq import pesq
+
+# -----------------------------  helpers  ---------------------------------
+class BitErrorRate(tf.keras.metrics.Metric):
+    """BER = fraction of bits decoded wrong (lower is better)"""
+
+    def __init__(self, name="ber", **kw):
+        super().__init__(name=name, **kw)
+        self.err = self.add_weight("err", initializer="zeros")
+        self.total = self.add_weight("tot", initializer="zeros")
+
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        y_pred_bin = tf.cast(y_pred > 0.5, tf.float32)  # threshold
+        errors = tf.reduce_sum(tf.abs(y_true - y_pred_bin))
+        bits = tf.cast(tf.size(y_true), tf.float32)
+        self.err.assign_add(errors)
+        self.total.assign_add(bits)
+
+    def result(self):
+        return self.err / self.total
+
+    def reset_state(self):
+        self.err.assign(0.0)
+        self.total.assign(0.0)
+
+
+
+'''
 
 
 class DeltaPESQMetric(tf.keras.metrics.Metric):
+    from pesq import pesq
     def __init__(self, fs=16000, name="delta_pesq", **kwargs):
         super().__init__(name=name, **kwargs)
         self.fs = fs
@@ -36,10 +63,11 @@ class DeltaPESQMetric(tf.keras.metrics.Metric):
 
 import numpy as np
 import tensorflow as tf
-from pesq import pesq as pesq_score  # ITU-T WB implementation
+
 
 
 class WatermarkedPESQMetric(tf.keras.metrics.Metric):
+    from pesq import pesq as pesq_score  # ITU-T WB implementation
     """
     Average PESQ-WB (MOS-LQO) of the **water-marked signal** vs. the clean
     reference.  Higher = better quality.
@@ -81,25 +109,4 @@ class WatermarkedPESQMetric(tf.keras.metrics.Metric):
         self.count.assign(0.0)
 
 
-# -----------------------------  helpers  ---------------------------------
-class BitErrorRate(tf.keras.metrics.Metric):
-    """BER = fraction of bits decoded wrong (lower is better)"""
-
-    def __init__(self, name="ber", **kw):
-        super().__init__(name=name, **kw)
-        self.err = self.add_weight("err", initializer="zeros")
-        self.total = self.add_weight("tot", initializer="zeros")
-
-    def update_state(self, y_true, y_pred, sample_weight=None):
-        y_pred_bin = tf.cast(y_pred > 0.5, tf.float32)  # threshold
-        errors = tf.reduce_sum(tf.abs(y_true - y_pred_bin))
-        bits = tf.cast(tf.size(y_true), tf.float32)
-        self.err.assign_add(errors)
-        self.total.assign_add(bits)
-
-    def result(self):
-        return self.err / self.total
-
-    def reset_state(self):
-        self.err.assign(0.0)
-        self.total.assign(0.0)
+'''
